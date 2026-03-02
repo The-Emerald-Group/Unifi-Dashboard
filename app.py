@@ -12,11 +12,9 @@ from http.server import SimpleHTTPRequestHandler, HTTPServer
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- CONFIGURATION ---
-# Modern API (UI.com)
 API_KEY = os.environ.get("UNIFI_API_KEY")
 MODERN_URL = "https://api.ui.com/v1"
 
-# Classic API (Cloud Controller)
 CLASSIC_URL = os.environ.get("CLASSIC_URL", "https://emerald.unificloud.co.uk:8443")
 CLASSIC_USER = os.environ.get("CLASSIC_USER")
 CLASSIC_PASS = os.environ.get("CLASSIC_PASS")
@@ -28,28 +26,38 @@ ALERT_WINDOW_MINS = 240  # 4 hours for modern ISP issues
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
+def format_duration(diff_sec):
+    """Progressively format time into m, h, d, w, mo"""
+    if diff_sec < 0: return "0m"
+    diff_mins = diff_sec / 60
+    if diff_mins < 60: return f"{int(diff_mins)}m"
+    diff_hours = diff_mins / 60
+    if diff_hours < 24: return f"{int(diff_hours)}h"
+    diff_days = diff_hours / 24
+    if diff_days < 7: return f"{int(diff_days)}d"
+    diff_weeks = diff_days / 7
+    if diff_weeks < 4: return f"{int(diff_weeks)}w"
+    diff_months = diff_days / 30.44
+    return f"{int(diff_months)}mo"
+
 def fetch_modern_unifi():
-    if not API_KEY:
-        log("!! Skipping Modern API: UNIFI_API_KEY missing.")
-        return []
-        
+    if not API_KEY: return []
     cards = []
     try:
         headers = {"X-API-KEY": API_KEY, "Accept": "application/json"}
         
-        dev_res = requests.get(f"{MODERN_URL}/devices", headers=headers, timeout=30)
-        dev_res.raise_for_status()
-        devices_raw = dev_res.json().get('data', [])
-
-        sites_res = requests.get(f"{MODERN_URL}/sites", headers=headers, timeout=30)
-        sites_res.raise_for_status()
-        sites_raw = sites_res.json().get('data', [])
-        site_health_map = {s.get('hostId'): s for s in sites_raw if s.get('hostId')}
+        # Fetch data
+        dev_res = requests.get(f"{MODERN_URL}/devices", headers=headers, timeout=30).json().get('data', [])
+        sites_res = requests.get(f"{MODERN_URL}/sites", headers=headers, timeout=30).json().get('data', [])
+        hosts_res = requests.get(f"{MODERN_URL}/hosts", headers=headers, timeout=30).json().get('data', [])
+        
+        site_health_map = {s.get('hostId'): s for s in sites_res if s.get('hostId')}
+        host_map = {h.get('id'): h for h in hosts_res if h.get('id')}
 
         current_time = datetime.now(timezone.utc)
         current_bucket = int(current_time.timestamp() / 300)
 
-        for host_group in devices_raw:
+        for host_group in dev_res:
             host_id = host_group.get('hostId')
             name = host_group.get('hostName') or "Unnamed Site"
             devices_list = host_group.get('devices', [])
@@ -57,6 +65,7 @@ def fetch_modern_unifi():
             stats = site_health_map.get(host_id, {}).get('statistics', {})
             counts = stats.get('counts', {})
             isp_name = stats.get('ispInfo', {}).get('name', '')
+            host_info = host_map.get(host_id, {})
             
             status = "Green"
             weight = 0
@@ -66,25 +75,41 @@ def fetch_modern_unifi():
             for d in devices_list:
                 dev_status = str(d.get('status', 'unknown')).lower()
                 has_update = d.get('firmwareStatus') == 'updateAvailable'
+                offline_str = ""
+
+                # If device is offline, calculate exactly how long
+                if dev_status != "online":
+                    dt_str = d.get('lastSeenAt') or d.get('lastConnectionStateChange')
+                    if not dt_str and d.get('isConsole'):
+                        dt_str = host_info.get('lastConnectionStateChange')
+                        
+                    if dt_str:
+                        try:
+                            clean_ts = dt_str.replace("Z", "+00:00")
+                            last_seen_dt = datetime.fromisoformat(clean_ts)
+                            diff_sec = (current_time - last_seen_dt).total_seconds()
+                            offline_str = format_duration(diff_sec)
+                        except Exception: pass
                 
                 inventory.append({
                     "name": d.get("name") or d.get("mac"),
                     "model": d.get("model") or "UniFi Device",
                     "status": dev_status.upper(),
-                    "has_update": has_update
+                    "has_update": has_update,
+                    "offline_duration": offline_str
                 })
 
                 if d.get('isConsole') and dev_status != "online":
                     status = "Red"; weight = 20
-                    issues.append({"label": "🚨 GATEWAY OFFLINE", "time": "Critical", "severity": "critical"})
+                    time_display = f"{offline_str} ago" if offline_str else "Critical"
+                    issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
 
             if status != "Red":
                 internet_issues = stats.get('internetIssues', [])
                 active_isp = False
                 for iss in internet_issues:
                     if (current_bucket - iss.get('index', 0)) <= 48:
-                        active_isp = True
-                        break
+                        active_isp = True; break
 
                 offline_count = counts.get('offlineDevice', 0)
                 if offline_count > 0:
@@ -110,10 +135,7 @@ def fetch_modern_unifi():
     return cards
 
 def fetch_classic_unifi():
-    if not CLASSIC_USER or not CLASSIC_PASS:
-        log("!! Skipping Classic API: Credentials missing.")
-        return []
-        
+    if not CLASSIC_USER or not CLASSIC_PASS: return []
     cards = []
     current_time = datetime.now(timezone.utc)
     
@@ -122,18 +144,14 @@ def fetch_classic_unifi():
         login_res = session.post(f"{CLASSIC_URL}/api/login", json={"username": CLASSIC_USER, "password": CLASSIC_PASS, "remember": True}, verify=False, timeout=15)
         login_res.raise_for_status()
 
-        sites_res = session.get(f"{CLASSIC_URL}/api/self/sites", verify=False, timeout=15)
-        sites_res.raise_for_status()
-        sites = sites_res.json().get('data', [])
+        sites_res = session.get(f"{CLASSIC_URL}/api/self/sites", verify=False, timeout=15).json().get('data', [])
 
-        for site in sites:
+        for site in sites_res:
             site_name = site.get('name')
             site_desc = site.get('desc', 'Unnamed Site')
             
-            dev_res = session.get(f"{CLASSIC_URL}/api/s/{site_name}/stat/device", verify=False, timeout=15)
-            devices = dev_res.json().get('data', [])
-
-            if not devices: continue
+            dev_res = session.get(f"{CLASSIC_URL}/api/s/{site_name}/stat/device", verify=False, timeout=15).json().get('data', [])
+            if not dev_res: continue
 
             status = "Green"
             weight = 0
@@ -141,32 +159,31 @@ def fetch_classic_unifi():
             inventory = []
             offline_count = 0
 
-            for dev in devices:
+            for dev in dev_res:
                 d_name = dev.get("name") or dev.get("mac", "Unknown Device")
                 d_model = dev.get("model", "UniFi Device")
                 is_offline = (dev.get("state", 0) == 0)
-                
+                offline_str = ""
+
+                if is_offline:
+                    offline_count += 1
+                    last_seen = dev.get('last_seen')
+                    if last_seen:
+                        diff_sec = (current_time - datetime.fromtimestamp(last_seen, timezone.utc)).total_seconds()
+                        offline_str = format_duration(diff_sec)
+
+                    if dev.get('type') == 'ugw':
+                        status = "Red"; weight = 20
+                        time_display = f"{offline_str} ago" if offline_str else "Offline"
+                        issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
+
                 inventory.append({
                     "name": d_name,
                     "model": d_model,
                     "status": "OFFLINE" if is_offline else "ONLINE",
-                    "has_update": dev.get("upgradable", False)
+                    "has_update": dev.get("upgradable", False),
+                    "offline_duration": offline_str
                 })
-
-                if is_offline:
-                    offline_count += 1
-                    time_display = "Offline"
-                    last_seen = dev.get('last_seen')
-                    if last_seen:
-                        diff_mins = (current_time - datetime.fromtimestamp(last_seen, timezone.utc)).total_seconds() / 60
-                        if diff_mins > 2880: time_display = f"{int(diff_mins / 1440)}d ago"
-                        else:
-                            h, m = divmod(int(diff_mins), 60)
-                            time_display = f"{h}h {m}m ago" if h > 0 else f"{m}m ago"
-
-                    if dev.get('type') == 'ugw':
-                        status = "Red"; weight = 20
-                        issues.append({"label": f"🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
 
             if offline_count > 0 and status != "Red":
                 status = "Yellow"; weight = 10
@@ -191,24 +208,13 @@ def fetch_classic_unifi():
 def harvest_data():
     while True:
         log(">>> Starting Unified Multi-Controller Harvest...")
-        
-        # Run both harvesters
         modern_cards = fetch_modern_unifi()
         classic_cards = fetch_classic_unifi()
-        
-        # Combine the lists
         all_cards = modern_cards + classic_cards
-        
-        # Sort combined list: Highest severity first, then alphabetical
         all_cards.sort(key=lambda x: (-x['IssuesCount'], x['SiteName']))
         
-        payload = {
-            "timestamp": datetime.now().strftime("%H:%M:%S"),
-            "sites": all_cards
-        }
-        
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=4)
+            json.dump({"timestamp": datetime.now().strftime("%H:%M:%S"), "sites": all_cards}, f, indent=4)
             
         log(f"*** HARVEST SUCCESS: Processed {len(modern_cards)} Modern + {len(classic_cards)} Classic sites ***")
         time.sleep(POLL_INTERVAL)
