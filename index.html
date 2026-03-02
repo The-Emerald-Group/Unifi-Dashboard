@@ -4,73 +4,29 @@
     <meta charset="UTF-8">
     <title>UniFi Gateway Monitor</title>
     <style>
-        /* Emerald/N-able Colour Scheme */
-        :root { 
-            --crit: #ff3b30; 
-            --warn: #ffcc00; 
-            --good: #4cd964; 
-            --bg: #0a0a0a; 
-            --card-bg: #161616; 
-        }
-
-        body { 
-            background: var(--bg); 
-            color: white; 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            padding: 20px; 
-            margin: 0; 
-        }
+        :root { --crit: #ff3b30; --warn: #ffcc00; --good: #4cd964; --bg: #0a0a0a; --card-bg: #161616; }
+        body { background: var(--bg); color: white; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; margin: 0; }
         
-        .header-container { 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: center; 
-            margin-bottom: 30px; 
-            border-bottom: 1px solid #222; 
-            padding-bottom: 10px; 
-        }
+        .header-container { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; border-bottom: 1px solid #222; padding-bottom: 10px; }
+        .harvest-time { font-size: 1.2rem; font-weight: bold; color: #00A1E4; }
+        
+        .header-controls { display: flex; align-items: center; gap: 20px; }
+        .filter-toggle { font-size: 0.85rem; color: #aaa; cursor: pointer; display: flex; align-items: center; gap: 5px; }
+        .filter-toggle input { cursor: pointer; }
 
-        .harvest-time { 
-            font-size: 1.2rem; 
-            font-weight: bold; 
-            color: #00A1E4; /* UniFi Blue */
-        }
-
-        .grid { 
-            display: grid; 
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); 
-            gap: 20px; 
-        }
-
-        /* Card Styles */
-        .card { 
-            padding: 20px; 
-            border-radius: 12px; 
-            background: var(--card-bg); 
-            border-left: 10px solid; 
-            transition: transform 0.2s; 
-            height: fit-content;
-        }
-        .card:hover { transform: scale(1.02); }
-
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 20px; }
+        .card { padding: 20px; border-radius: 12px; background: var(--card-bg); border-left: 10px solid; transition: 0.3s; height: fit-content; }
+        
         .Red { border-color: var(--crit); }
         .Yellow { border-color: var(--warn); }
         .Green { border-color: var(--good); opacity: 0.7; }
+        .hidden { display: none !important; }
         
-        .site-name { 
-            font-size: 1.4rem; 
-            font-weight: bold; 
-            margin-bottom: 15px; 
-            line-height: 1.2; 
-        }
+        .site-name { font-size: 1.4rem; font-weight: bold; margin-bottom: 2px; line-height: 1.2; }
+        .site-meta { font-size: 0.75rem; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 15px; font-weight: bold; }
+        .isp-badge { color: #00A1E4; }
 
-        /* Issue Items */
-        .issue-item { 
-            margin-bottom: 8px; 
-            padding: 10px 12px; 
-            border-radius: 4px; 
-            border-left: 4px solid; 
-        }
+        .issue-item { margin-bottom: 8px; padding: 10px 12px; border-radius: 4px; border-left: 4px solid; }
         .sev-critical { border-left-color: var(--crit); background: rgba(255, 59, 48, 0.15); }
         .sev-warning { border-left-color: var(--warn); background: rgba(255, 204, 0, 0.1); }
 
@@ -78,97 +34,98 @@
         .instruction { font-size: 0.9rem; font-weight: bold; }
         .srv-time { font-size: 0.8rem; opacity: 0.7; }
 
-        /* Inventory Dropdown */
-        details { 
-            margin-top: 15px; 
-            border-top: 1px solid #333; 
-            padding-top: 10px; 
-            cursor: pointer; 
-        }
-        summary { 
-            font-size: 0.7rem; 
-            color: #666; 
-            text-transform: uppercase; 
-            letter-spacing: 1px; 
-            list-style: none; 
-            outline: none; 
-        }
+        details { margin-top: 15px; border-top: 1px solid #333; padding-top: 10px; cursor: pointer; }
+        summary { font-size: 0.7rem; color: #666; text-transform: uppercase; letter-spacing: 1px; list-style: none; outline: none; }
         .inv-list { margin-top: 10px; font-size: 0.8rem; }
-        .inv-row { 
-            display: flex; 
-            justify-content: space-between; 
-            margin-bottom: 4px; 
-            border-bottom: 1px solid #222; 
-            padding-bottom: 2px; 
-        }
+        .inv-row { display: flex; justify-content: space-between; margin-bottom: 4px; border-bottom: 1px solid #222; padding-bottom: 2px; }
         .status-ONLINE { color: var(--good); }
         .status-OFFLINE, .status-DISCONNECTED { color: var(--crit); font-weight: bold; }
+        .update-icon { color: #00A1E4; font-size: 0.85rem; margin-left: 4px; text-decoration: none; }
     </style>
 </head>
 <body>
     <div class="header-container">
         <h1 style="margin:0; color:#444; letter-spacing:3px;">UNIFI SITE MONITOR</h1>
-        <div style="text-align:right">
-            <div id="harvest-clock" class="harvest-time">--:--:--</div>
-            <div style="font-size:0.7rem; color:#666; text-transform:uppercase;">Last API Harvest</div>
+        <div class="header-controls">
+            <label class="filter-toggle">
+                <input type="checkbox" id="hide-healthy" onchange="renderGrid()"> 
+                Hide Healthy Sites
+            </label>
+            <div style="text-align:right">
+                <div id="harvest-clock" class="harvest-time">--:--:--</div>
+                <div style="font-size:0.7rem; color:#666; text-transform:uppercase;">Last API Harvest</div>
+            </div>
         </div>
     </div>
 
     <div id="grid" class="grid">Awaiting Data from UniFi...</div>
 
     <script>
-        async function update() {
+        let currentData = [];
+
+        async function fetchData() {
             try {
-                // Fetch data.json with a cache-buster
                 const res = await fetch('data.json?v=' + Date.now());
                 const raw = await res.json();
-                
                 document.getElementById('harvest-clock').innerText = raw.timestamp || '--:--:--';
-
-                if (!raw.sites || raw.sites.length === 0) {
-                    document.getElementById('grid').innerHTML = "<div style='grid-column:1/-1;text-align:center;color:#666;'>No active sites found. Check API Key or Logs.</div>";
-                    return;
+                if (raw.sites) {
+                    currentData = raw.sites;
+                    renderGrid();
                 }
+            } catch (e) { console.error("Dashboard Update Error:", e); }
+        }
 
-                // Map the new 'sites' structure
-                document.getElementById('grid').innerHTML = raw.sites.map(site => `
-                    <div class="card ${site.Status}">
-                        <div class="site-name">${site.SiteName}</div>
-                        
-                        <div class="issue-list">
-                            ${site.Status === 'Green' ? '<div style="color:var(--good); font-size:0.8rem;">✓ Site Healthy</div>' : 
-                                site.IssuesList.map(issue => `
-                                    <div class="issue-item sev-${issue.severity}">
-                                        <div class="instruction-box">
-                                            <span class="instruction">${issue.label}</span>
-                                            <span class="srv-time">${issue.time || ''}</span>
-                                        </div>
+        function renderGrid() {
+            const hideHealthy = document.getElementById('hide-healthy').checked;
+            
+            if (currentData.length === 0) {
+                document.getElementById('grid').innerHTML = "<div style='grid-column:1/-1;text-align:center;color:#666;'>No active sites found.</div>";
+                return;
+            }
+
+            document.getElementById('grid').innerHTML = currentData.map(site => {
+                const isHidden = hideHealthy && site.Status === 'Green' ? 'hidden' : '';
+                return `
+                <div class="card ${site.Status} ${isHidden}">
+                    <div class="site-name">${site.SiteName}</div>
+                    <div class="site-meta">
+                        ${site.Model} ${site.ISP ? `&nbsp;&nbsp;•&nbsp;&nbsp;<span class="isp-badge">📡 ${site.ISP}</span>` : ''}
+                    </div>
+                    
+                    <div class="issue-list">
+                        ${site.Status === 'Green' ? '<div style="color:var(--good); font-size:0.8rem;">✓ Site Healthy</div>' : 
+                            site.IssuesList.map(issue => `
+                                <div class="issue-item sev-${issue.severity}">
+                                    <div class="instruction-box">
+                                        <span class="instruction">${issue.label}</span>
+                                        <span class="srv-time">${issue.time || ''}</span>
                                     </div>
-                                `).join('')
-                            }
-                        </div>
+                                </div>
+                            `).join('')
+                        }
+                    </div>
 
-                        <details>
-                            <summary>Device Inventory (${site.Inventory.length})</summary>
-                            <div class="inv-list">
-                                ${site.Inventory.map(item => `
+                    <details>
+                        <summary>Device Inventory (${site.Inventory.length})</summary>
+                        <div class="inv-list">
+                            ${site.Inventory.length === 0 ? '<div style="color:#666">No devices found.</div>' : 
+                                site.Inventory.map(item => `
                                     <div class="inv-row">
-                                        <span>${item.name} <small style="color:#666">(${item.model})</small></span>
+                                        <span>
+                                            ${item.name} <small style="color:#666">(${item.model})</small>
+                                            ${item.has_update ? '<span class="update-icon" title="Firmware Update Available">⬆️</span>' : ''}
+                                        </span>
                                         <span class="status-${item.status}">${item.status}</span>
                                     </div>
                                 `).join('')}
-                            </div>
-                        </details>
-                    </div>
-                `).join('');
-            } catch (e) { 
-                console.error("Dashboard Update Error:", e); 
-            }
+                        </div>
+                    </details>
+                </div>
+            `}).join('');
         }
 
-        // Refresh every 30 seconds
-        setInterval(update, 30000); 
-        update();
+        setInterval(fetchData, 30000); 
+        fetchData();
     </script>
 </body>
 </html>
