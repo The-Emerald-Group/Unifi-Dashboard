@@ -71,11 +71,16 @@ def fetch_modern_unifi():
             weight = 0
             issues = []
             inventory = []
+            primary_model = None # Specifically search for the Console
 
             for d in devices_list:
                 dev_status = str(d.get('status', 'unknown')).lower()
                 has_update = d.get('firmwareStatus') == 'updateAvailable'
                 offline_str = ""
+
+                # Explicitly check for the main console to use as the Site Model
+                if d.get('isConsole'):
+                    primary_model = d.get('model')
 
                 # If device is offline, calculate exactly how long
                 if dev_status != "online":
@@ -104,6 +109,12 @@ def fetch_modern_unifi():
                     time_display = f"{offline_str} ago" if offline_str else "Critical"
                     issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
 
+            # Fallback if no console is detected
+            if not primary_model and devices_list:
+                primary_model = devices_list[0].get('model', 'Gateway')
+            elif not primary_model:
+                primary_model = "Gateway"
+
             if status != "Red":
                 internet_issues = stats.get('internetIssues', [])
                 active_isp = False
@@ -122,7 +133,7 @@ def fetch_modern_unifi():
 
             cards.append({
                 "SiteName": name,
-                "Model": devices_list[0].get('model') if devices_list else 'Gateway',
+                "Model": primary_model,
                 "ISP": isp_name,
                 "Inventory": inventory,
                 "Status": status,
@@ -158,12 +169,17 @@ def fetch_classic_unifi():
             issues = []
             inventory = []
             offline_count = 0
+            primary_model = None
 
             for dev in dev_res:
                 d_name = dev.get("name") or dev.get("mac", "Unknown Device")
                 d_model = dev.get("model", "UniFi Device")
                 is_offline = (dev.get("state", 0) == 0)
                 offline_str = ""
+
+                # Look for a gateway/router on the classic site
+                if dev.get('type') == 'ugw':
+                    primary_model = d_model
 
                 if is_offline:
                     offline_count += 1
@@ -185,13 +201,16 @@ def fetch_classic_unifi():
                     "offline_duration": offline_str
                 })
 
+            if not primary_model:
+                primary_model = "Cloud Hosted"
+
             if offline_count > 0 and status != "Red":
                 status = "Yellow"; weight = 10
                 issues.append({"label": f"⚠️ {offline_count} Device(s) Offline", "time": "Partial", "severity": "warning"})
 
             cards.append({
                 "SiteName": f"{site_desc} (Cloud)",
-                "Model": "Cloud Hosted",
+                "Model": primary_model,
                 "ISP": "",
                 "Inventory": inventory,
                 "Status": status,
