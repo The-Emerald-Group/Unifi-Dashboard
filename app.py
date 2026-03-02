@@ -30,21 +30,17 @@ def harvest_data():
         try:
             log(">>> Starting UniFi API Harvest...")
             
-            # Fetch gateways/consoles
             res = requests.get(f"{BASE_URL}/ea/devices", headers=headers, timeout=30)
             res.raise_for_status()
             devices_data = res.json().get('data', [])
 
             wallboard_data = {}
+            current_time = datetime.now(timezone.utc)
 
             for dev in devices_data:
-                # The Gateway IS the site/customer. Let's get its name.
                 name = dev.get("name") or dev.get("hostName") or dev.get("mac") or "Unnamed Gateway"
-                
-                # Try to grab the hardware model (e.g., UDM-Pro, Cloud Gateway Ultra)
                 model = dev.get("productName") or dev.get("hardwareName") or dev.get("hardwareId") or "UniFi Gateway"
                 
-                # Each gateway gets its own card
                 if name not in wallboard_data:
                     wallboard_data[name] = {
                         "DeviceName": name, 
@@ -54,28 +50,78 @@ def harvest_data():
                         "IssuesList": []
                     }
                 
-                # UniFi often uses 'status' or 'state'
                 state = str(dev.get("status", dev.get("state", "UNKNOWN"))).upper()
                 
-                # Logic for Red/Yellow/Green
+                # --- OFFLINE LOGIC & TIME TRACKING ---
                 if state in ["OFFLINE", "DISCONNECTED", "ADOPTION_FAILED"]:
+                    # Look for UniFi's last seen timestamp
+                    last_seen_str = dev.get("lastSeenAt") or dev.get("lastReportedAt") or dev.get("lastSeen")
+                    time_display = "Currently Offline"
+                    issue_label = f"🚨 {state}"
+                    severity = "critical"
+                    weight = 2
+                    
+                    if last_seen_str:
+                        try:
+                            # Parse UniFi's ISO time format
+                            clean_ts = last_seen_str[:19]
+                            last_seen = datetime.strptime(clean_ts, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+                            diff_mins = (current_time - last_seen).total_seconds() / 60
+                            
+                            # Format the time display
+                            if diff_mins > 2880: # Over 48 hours
+                                time_display = f"{int(diff_mins / 1440)}d ago"
+                            else:
+                                h = int(diff_mins // 60)
+                                m = int(diff_mins % 60)
+                                time_display = f"{h}h {m}m ago" if h > 0 else f"{m}m ago"
+                            
+                            # Apply Tiered Sorting Weights
+                            if diff_mins > 20160: # 14+ Days
+                                issue_label = "🕸️ HISTORICAL OFFLINE"
+                                severity = "stale"
+                                weight = 0.1
+                            elif diff_mins > 2880: # 48 Hours to 7 Days
+                                issue_label = "👻 LONG TERM OFFLINE"
+                                severity = "stale"
+                                weight = 0.5
+                            else: # Under 48 hours
+                                issue_label = "🚨 RECENTLY OFFLINE"
+                                severity = "critical"
+                                weight = 4 # HIGHEST weight ensures recent outages are #1
+                                
+                        except Exception:
+                            pass # Fallback to defaults if time parsing fails
+                            
                     wallboard_data[name]["Status"] = "Red"
-                    wallboard_data[name]["IssuesCount"] += 2
+                    wallboard_data[name]["IssuesCount"] += weight
                     wallboard_data[name]["IssuesList"].append({
-                        "label": f"🚨 OFFLINE",
-                        "severity": "critical"
+                        "label": issue_label,
+                        "time": time_display,
+                        "severity": severity
                     })
-                elif state in ["UPDATING", "PROVISIONING", "PENDING", "DEGRADED"]:
+                    
+                # --- WARNING & ISSUE DETECTION LOGIC ---
+                elif state in ["UPDATING", "PROVISIONING", "PENDING", "DEGRADED", "NEEDS_ATTENTION", "WARNING"]:
                     if wallboard_data[name]["Status"] != "Red":
                         wallboard_data[name]["Status"] = "Yellow"
                     
+                    # Try to extract the exact reason from UniFi
+                    specific_issue = dev.get("stateReason") or dev.get("statusReason") or dev.get("issue")
+                    
+                    if specific_issue:
+                        issue_text = f"⚠️ Issue: {specific_issue}"
+                    else:
+                        issue_text = f"⚠️ {state}"
+                        
                     wallboard_data[name]["IssuesCount"] += 1
                     wallboard_data[name]["IssuesList"].append({
-                        "label": f"⏳ {state}",
+                        "label": issue_text,
+                        "time": "Active Warning",
                         "severity": "warning"
                     })
 
-            # Sort: Offline Gateways at the top, then alphabetically by Name
+            # Sort mathematically by IssuesCount (highest weight first), then alphabetically
             final_output = sorted(wallboard_data.values(), key=lambda x: (-x['IssuesCount'], x['DeviceName']))
             
             payload = {
