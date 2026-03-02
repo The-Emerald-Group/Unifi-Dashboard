@@ -1,6 +1,6 @@
 services:
   unifi-wallboard:
-    build: .
+    image: samuelstreets/unifi-gateway-monitor:latest
     container_name: unifi-monitor
     ports:
       - "8081:8080"
