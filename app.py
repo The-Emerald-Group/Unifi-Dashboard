@@ -26,34 +26,30 @@ def harvest_data():
 
     while True:
         try:
-            log(">>> Starting Final Unified UniFi Harvest...")
+            log(">>> Starting Enhanced UniFi Harvest...")
             
-            # 1. Fetch Master Device List (Friendly Names + Inventory)
             dev_res = requests.get(f"{BASE_URL}/devices", headers=headers, timeout=30)
             dev_res.raise_for_status()
             devices_raw = dev_res.json().get('data', [])
 
-            # 2. Fetch Health Statistics (Offline counts + ISP Issues)
             sites_res = requests.get(f"{BASE_URL}/sites", headers=headers, timeout=30)
             sites_res.raise_for_status()
             sites_raw = sites_res.json().get('data', [])
 
-            # Map site health by hostId
             site_health_map = {s.get('hostId'): s for s in sites_raw if s.get('hostId')}
 
             final_cards = []
             current_time = datetime.now(timezone.utc)
-            # Calculate current 5-minute bucket index
             current_bucket = int(current_time.timestamp() / 300)
 
             for host_group in devices_raw:
                 host_id = host_group.get('hostId')
-                # Grab hostName directly from your provided JSON structure
                 name = host_group.get('hostName') or "Unnamed Site"
                 devices_list = host_group.get('devices', [])
                 
                 stats = site_health_map.get(host_id, {}).get('statistics', {})
                 counts = stats.get('counts', {})
+                isp_name = stats.get('ispInfo', {}).get('name', '')
                 
                 status = "Green"
                 weight = 0
@@ -62,10 +58,13 @@ def harvest_data():
 
                 for d in devices_list:
                     dev_status = str(d.get('status', 'unknown')).lower()
+                    has_update = d.get('firmwareStatus') == 'updateAvailable'
+                    
                     inventory.append({
                         "name": d.get("name") or d.get("mac"),
                         "model": d.get("model") or "UniFi Device",
-                        "status": dev_status.upper()
+                        "status": dev_status.upper(),
+                        "has_update": has_update
                     })
 
                     # 🔴 RED: Main Gateway/Console is Offline
@@ -76,13 +75,11 @@ def harvest_data():
 
                 # 🟡 WARNING: Check for sub-device outages or ISP issues within 4 hours
                 if status != "Red":
-                    # Check Internet Issues bucket index
                     internet_issues = stats.get('internetIssues', [])
                     active_isp = False
                     for iss in internet_issues:
                         idx = iss.get('index', 0)
-                        # If index is within the last 4 hours (48 buckets)
-                        if (current_bucket - idx) <= 48:
+                        if (current_bucket - idx) <= 48: # 4 Hours
                             active_isp = True
                             break
 
@@ -97,6 +94,8 @@ def harvest_data():
 
                 final_cards.append({
                     "SiteName": name,
+                    "Model": devices_list[0].get('model') if devices_list else 'Gateway',
+                    "ISP": isp_name,
                     "Inventory": inventory,
                     "Status": status,
                     "IssuesCount": weight,
