@@ -41,6 +41,7 @@
         .status-ONLINE { color: var(--good); }
         .status-OFFLINE, .status-DISCONNECTED { color: var(--crit); font-weight: bold; }
         .update-icon { color: #00A1E4; font-size: 0.85rem; margin-left: 4px; text-decoration: none; }
+        .offline-time { font-size: 0.75rem; color: #888; font-weight: normal; margin-left: 4px; }
     </style>
 </head>
 <body>
@@ -115,7 +116,10 @@
                                             ${item.name} <small style="color:#666">(${item.model})</small>
                                             ${item.has_update ? '<span class="update-icon" title="Firmware Update Available">⬆️</span>' : ''}
                                         </span>
-                                        <span class="status-${item.status}">${item.status}</span>
+                                        <span class="status-${item.status}">
+                                            ${item.status} 
+                                            ${item.offline_duration ? `<span class="offline-time">(${item.offline_duration})</span>` : ''}
+                                        </span>
                                     </div>
                                 `).join('')}
                         </div>
