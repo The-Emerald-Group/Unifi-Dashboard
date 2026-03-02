@@ -12,6 +12,7 @@ API_KEY = os.environ.get("UNIFI_API_KEY")
 BASE_URL = "https://api.ui.com/v1"
 DATA_FILE = "data.json"
 POLL_INTERVAL = 300 
+ALERT_WINDOW_MINS = 240  # Filter out anything older than 4 hours
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -41,13 +42,16 @@ def harvest_data():
             site_health_map = {s.get('hostId'): s for s in sites_raw if s.get('hostId')}
 
             final_cards = []
+            current_time = datetime.now(timezone.utc)
+            # Calculate current 5-minute bucket index
+            current_bucket = int(current_time.timestamp() / 300)
 
             for host_group in devices_raw:
                 host_id = host_group.get('hostId')
+                # Grab hostName directly from your provided JSON structure
                 name = host_group.get('hostName') or "Unnamed Site"
                 devices_list = host_group.get('devices', [])
                 
-                # Get the health stats for this specific host
                 stats = site_health_map.get(host_id, {}).get('statistics', {})
                 counts = stats.get('counts', {})
                 
@@ -56,7 +60,6 @@ def harvest_data():
                 issues = []
                 inventory = []
 
-                # Build Inventory and check for Gateway (Red) status
                 for d in devices_list:
                     dev_status = str(d.get('status', 'unknown')).lower()
                     inventory.append({
@@ -65,36 +68,32 @@ def harvest_data():
                         "status": dev_status.upper()
                     })
 
-                    # 🔴 CRITICAL: Main Gateway/Console is Offline
+                    # 🔴 RED: Main Gateway/Console is Offline
                     if d.get('isConsole') and dev_status != "online":
                         status = "Red"
                         weight = 20
                         issues.append({"label": "🚨 GATEWAY OFFLINE", "time": "Critical", "severity": "critical"})
 
-                # 🟡 WARNING: Check for sub-device outages or ISP issues if not already Red
+                # 🟡 WARNING: Check for sub-device outages or ISP issues within 4 hours
                 if status != "Red":
-                    offline_count = counts.get('offlineDevice', 0)
-                    critical_notifs = counts.get('criticalNotification', 0)
-                    
-                    # check for internet issues in statistics
+                    # Check Internet Issues bucket index
                     internet_issues = stats.get('internetIssues', [])
-                    wan_data = stats.get('wans', {}).get('WAN', {})
-                    wan_issues = wan_data.get('wanIssues', [])
+                    active_isp = False
+                    for iss in internet_issues:
+                        idx = iss.get('index', 0)
+                        # If index is within the last 4 hours (48 buckets)
+                        if (current_bucket - idx) <= 48:
+                            active_isp = True
+                            break
 
+                    offline_count = counts.get('offlineDevice', 0)
                     if offline_count > 0:
-                        status = "Yellow"
-                        weight = 10
-                        issues.append({"label": f"⚠️ {offline_count} Device(s) Offline", "time": "Partial Outage", "severity": "warning"})
+                        status = "Yellow"; weight = 10
+                        issues.append({"label": f"⚠️ {offline_count} Device(s) Offline", "time": "Partial", "severity": "warning"})
                     
-                    if internet_issues or wan_issues:
-                        status = "Yellow"
-                        if weight < 5: weight = 5
-                        issues.append({"label": "📡 ISP/Latency Issues", "time": "Check ISP", "severity": "warning"})
-
-                    if critical_notifs > 0:
-                        status = "Yellow"
-                        if weight < 8: weight = 8
-                        issues.append({"label": f"🔔 {critical_notifs} System Alert(s)", "time": "Action Required", "severity": "warning"})
+                    if active_isp:
+                        status = "Yellow"; weight = 5
+                        issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 4h ago", "severity": "warning"})
 
                 final_cards.append({
                     "SiteName": name,
@@ -104,16 +103,9 @@ def harvest_data():
                     "IssuesList": issues
                 })
 
-            # Sort: Priority (Offline > Warning > Healthy) then Alphabetical
             final_cards.sort(key=lambda x: (-x['IssuesCount'], x['SiteName']))
-            
-            payload = {
-                "timestamp": datetime.now().strftime("%H:%M:%S"),
-                "sites": final_cards
-            }
-            
-            with open(DATA_FILE, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=4)
+            payload = {"timestamp": datetime.now().strftime("%H:%M:%S"), "sites": final_cards}
+            with open(DATA_FILE, "w", encoding="utf-8") as f: json.dump(payload, f, indent=4)
             log(f"*** HARVEST SUCCESS: Processed {len(final_cards)} sites ***")
             
         except Exception as e:
