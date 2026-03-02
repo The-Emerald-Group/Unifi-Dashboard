@@ -84,6 +84,8 @@ def fetch_modern_unifi():
             issues = []
             inventory = []
             primary_model = None 
+            offline_devs = 0
+            total_devs = len(devices_list)
 
             for d in devices_list:
                 dev_status = str(d.get('status', 'unknown')).lower()
@@ -94,6 +96,7 @@ def fetch_modern_unifi():
                     primary_model = d.get('model')
 
                 if dev_status != "online":
+                    offline_devs += 1
                     dt_str = d.get('lastSeenAt') or d.get('lastConnectionStateChange')
                     if not dt_str and d.get('isConsole'):
                         dt_str = host_info.get('lastConnectionStateChange')
@@ -106,7 +109,6 @@ def fetch_modern_unifi():
                         except: 
                             offline_str = ">30d"
                     else:
-                        # FALLBACK: If API has completely purged the timestamp
                         offline_str = ">30d"
                 
                 inventory.append({
@@ -122,6 +124,11 @@ def fetch_modern_unifi():
                     time_display = f"{offline_str} ago" if offline_str else "Critical"
                     issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
 
+            # --- NEW: If ALL devices at a site are offline, make it RED ---
+            if total_devs > 0 and offline_devs == total_devs and status != "Red":
+                status = "Red"; weight = 20
+                issues.append({"label": "🚨 SITE COMPLETELY OFFLINE", "time": "Critical", "severity": "critical"})
+
             if not primary_model and devices_list:
                 primary_model = devices_list[0].get('model', 'Gateway')
             elif not primary_model:
@@ -134,10 +141,9 @@ def fetch_modern_unifi():
                     if (current_bucket - iss.get('index', 0)) <= (ALERT_WINDOW_MINS / 5):
                         active_isp = True; break
 
-                offline_count = counts.get('offlineDevice', 0)
-                if offline_count > 0:
+                if offline_devs > 0:
                     status = "Yellow"; weight = 10
-                    issues.append({"label": f"⚠️ {offline_count} Device(s) Offline", "time": "Partial", "severity": "warning"})
+                    issues.append({"label": f"⚠️ {offline_devs} Device(s) Offline", "time": "Partial", "severity": "warning"})
                 
                 if active_isp:
                     status = "Yellow"; weight = 5
@@ -182,6 +188,7 @@ def fetch_classic_unifi():
             inventory = []
             offline_count = 0
             primary_model = None
+            total_devs = len(dev_res)
 
             for dev in dev_res:
                 d_name = dev.get("name") or dev.get("mac", "Unknown Device")
@@ -194,18 +201,15 @@ def fetch_classic_unifi():
 
                 if is_offline:
                     offline_count += 1
-                    
                     last_seen = dev.get('last_seen') or dev.get('last_disconnect')
                     
                     if last_seen:
                         try:
                             diff_sec = (current_time - datetime.fromtimestamp(float(last_seen), timezone.utc)).total_seconds()
                             offline_str = format_duration(diff_sec)
-                        except Exception as time_err:
-                            log(f"Time parsing warning for {d_name}: {time_err}")
+                        except Exception:
                             offline_str = ">30d"
                     else:
-                        # FALLBACK: If API has completely purged the timestamp
                         offline_str = ">30d"
 
                     if dev.get('type') == 'ugw':
@@ -221,12 +225,18 @@ def fetch_classic_unifi():
                     "offline_duration": offline_str
                 })
 
+            # --- NEW: If ALL devices at a site are offline, make it RED ---
+            if total_devs > 0 and offline_count == total_devs and status != "Red":
+                status = "Red"; weight = 20
+                issues.append({"label": "🚨 SITE COMPLETELY OFFLINE", "time": "Critical", "severity": "critical"})
+
             if not primary_model:
                 primary_model = "Cloud Hosted"
 
-            if offline_count > 0 and status != "Red":
-                status = "Yellow"; weight = 10
-                issues.append({"label": f"⚠️ {offline_count} Device(s) Offline", "time": "Partial", "severity": "warning"})
+            if status != "Red":
+                if offline_count > 0:
+                    status = "Yellow"; weight = 10
+                    issues.append({"label": f"⚠️ {offline_count} Device(s) Offline", "time": "Partial", "severity": "warning"})
 
             cards.append({
                 "SiteName": f"{site_desc} (Cloud)",
