@@ -21,14 +21,14 @@ CLASSIC_PASS = os.environ.get("CLASSIC_PASS")
 
 DATA_FILE = "data.json"
 POLL_INTERVAL = 300 
-ALERT_WINDOW_MINS = 240  # 4 hours for modern ISP issues
+ALERT_WINDOW_MINS = 240 
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
 def format_duration(diff_sec):
-    """Progressively format time into m, h, d, w, mo"""
-    if diff_sec < 0: return "0m"
+    """Progressively format time into m, h, d, w, mo, y"""
+    if diff_sec < 0: return ""
     diff_mins = diff_sec / 60
     if diff_mins < 60: return f"{int(diff_mins)}m"
     diff_hours = diff_mins / 60
@@ -38,7 +38,20 @@ def format_duration(diff_sec):
     diff_weeks = diff_days / 7
     if diff_weeks < 4: return f"{int(diff_weeks)}w"
     diff_months = diff_days / 30.44
-    return f"{int(diff_months)}mo"
+    if diff_months < 12: return f"{int(diff_months)}mo"
+    return f"{int(diff_months/12)}y"
+
+def parse_iso_time(ts_str):
+    """Bulletproof datetime parsing to prevent timezone crashes"""
+    try:
+        if not ts_str: return None
+        clean_ts = ts_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean_ts)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
 
 def fetch_modern_unifi():
     if not API_KEY: return []
@@ -46,7 +59,6 @@ def fetch_modern_unifi():
     try:
         headers = {"X-API-KEY": API_KEY, "Accept": "application/json"}
         
-        # Fetch data
         dev_res = requests.get(f"{MODERN_URL}/devices", headers=headers, timeout=30).json().get('data', [])
         sites_res = requests.get(f"{MODERN_URL}/sites", headers=headers, timeout=30).json().get('data', [])
         hosts_res = requests.get(f"{MODERN_URL}/hosts", headers=headers, timeout=30).json().get('data', [])
@@ -71,30 +83,27 @@ def fetch_modern_unifi():
             weight = 0
             issues = []
             inventory = []
-            primary_model = None # Specifically search for the Console
+            primary_model = None 
 
             for d in devices_list:
                 dev_status = str(d.get('status', 'unknown')).lower()
                 has_update = d.get('firmwareStatus') == 'updateAvailable'
                 offline_str = ""
 
-                # Explicitly check for the main console to use as the Site Model
                 if d.get('isConsole'):
                     primary_model = d.get('model')
 
-                # If device is offline, calculate exactly how long
                 if dev_status != "online":
                     dt_str = d.get('lastSeenAt') or d.get('lastConnectionStateChange')
                     if not dt_str and d.get('isConsole'):
                         dt_str = host_info.get('lastConnectionStateChange')
                         
-                    if dt_str:
+                    last_seen_dt = parse_iso_time(dt_str)
+                    if last_seen_dt:
                         try:
-                            clean_ts = dt_str.replace("Z", "+00:00")
-                            last_seen_dt = datetime.fromisoformat(clean_ts)
                             diff_sec = (current_time - last_seen_dt).total_seconds()
                             offline_str = format_duration(diff_sec)
-                        except Exception: pass
+                        except: pass
                 
                 inventory.append({
                     "name": d.get("name") or d.get("mac"),
@@ -109,7 +118,6 @@ def fetch_modern_unifi():
                     time_display = f"{offline_str} ago" if offline_str else "Critical"
                     issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
 
-            # Fallback if no console is detected
             if not primary_model and devices_list:
                 primary_model = devices_list[0].get('model', 'Gateway')
             elif not primary_model:
@@ -119,7 +127,7 @@ def fetch_modern_unifi():
                 internet_issues = stats.get('internetIssues', [])
                 active_isp = False
                 for iss in internet_issues:
-                    if (current_bucket - iss.get('index', 0)) <= 48:
+                    if (current_bucket - iss.get('index', 0)) <= (ALERT_WINDOW_MINS / 5):
                         active_isp = True; break
 
                 offline_count = counts.get('offlineDevice', 0)
@@ -177,16 +185,23 @@ def fetch_classic_unifi():
                 is_offline = (dev.get("state", 0) == 0)
                 offline_str = ""
 
-                # Look for a gateway/router on the classic site
                 if dev.get('type') == 'ugw':
                     primary_model = d_model
 
                 if is_offline:
                     offline_count += 1
-                    last_seen = dev.get('last_seen')
+                    
+                    # Classic API might clear last_seen if it's been offline too long.
+                    # We check last_disconnect as a backup.
+                    last_seen = dev.get('last_seen') or dev.get('last_disconnect')
+                    
                     if last_seen:
-                        diff_sec = (current_time - datetime.fromtimestamp(last_seen, timezone.utc)).total_seconds()
-                        offline_str = format_duration(diff_sec)
+                        try:
+                            # Ensure we parse it safely
+                            diff_sec = (current_time - datetime.fromtimestamp(float(last_seen), timezone.utc)).total_seconds()
+                            offline_str = format_duration(diff_sec)
+                        except Exception as time_err:
+                            log(f"Time parsing warning for {d_name}: {time_err}")
 
                     if dev.get('type') == 'ugw':
                         status = "Red"; weight = 20
