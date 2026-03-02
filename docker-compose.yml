@@ -1,0 +1,16 @@
+services:
+  unifi-wallboard:
+    build: .
+    container_name: unifi-monitor
+    ports:
+      - "8081:8080"
+    environment:
+      - UNIFI_API_KEY=your_unifi_api_key_here
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/data.json')"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: always
