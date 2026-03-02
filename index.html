@@ -14,18 +14,54 @@
         .filter-toggle { font-size: 0.85rem; color: #aaa; cursor: pointer; display: flex; align-items: center; gap: 5px; }
         .filter-toggle input { cursor: pointer; }
 
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 20px; }
-        .card { padding: 20px; border-radius: 12px; background: var(--card-bg); border-left: 10px solid; transition: 0.3s; height: fit-content; }
+        /* GRID FIX: Forces all rows to be perfectly uniform */
+        .grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); 
+            grid-auto-rows: 1fr; 
+            gap: 20px; 
+        }
+        
+        /* FLEXBOX FIX: Pushes inventory to the bottom and makes heights match */
+        .card { 
+            padding: 20px; 
+            border-radius: 12px; 
+            background: var(--card-bg); 
+            border-left: 10px solid; 
+            transition: 0.3s; 
+            display: flex;
+            flex-direction: column;
+        }
         
         .Red { border-color: var(--crit); }
         .Yellow { border-color: var(--warn); }
         .Green { border-color: var(--good); opacity: 0.7; }
         .hidden { display: none !important; }
         
-        .site-name { font-size: 1.4rem; font-weight: bold; margin-bottom: 2px; line-height: 1.2; }
-        .site-meta { font-size: 0.75rem; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 15px; font-weight: bold; }
+        /* TEXT TRUNCATION FIX: Prevents long names from wrapping to 2 lines */
+        .site-name { 
+            font-size: 1.4rem; 
+            font-weight: bold; 
+            margin-bottom: 2px; 
+            line-height: 1.2; 
+            white-space: nowrap; 
+            overflow: hidden; 
+            text-overflow: ellipsis;
+        }
+        .site-meta { 
+            font-size: 0.75rem; 
+            color: #666; 
+            text-transform: uppercase; 
+            letter-spacing: 1px; 
+            margin-bottom: 15px; 
+            font-weight: bold; 
+            white-space: nowrap; 
+            overflow: hidden; 
+            text-overflow: ellipsis;
+        }
         .isp-badge { color: #00A1E4; }
 
+        .issue-list { flex-grow: 1; }
         .issue-item { margin-bottom: 8px; padding: 10px 12px; border-radius: 4px; border-left: 4px solid; }
         .sev-critical { border-left-color: var(--crit); background: rgba(255, 59, 48, 0.15); }
         .sev-warning { border-left-color: var(--warn); background: rgba(255, 204, 0, 0.1); }
@@ -88,8 +124,8 @@
                 const isHidden = hideHealthy && site.Status === 'Green' ? 'hidden' : '';
                 return `
                 <div class="card ${site.Status} ${isHidden}">
-                    <div class="site-name">${site.SiteName}</div>
-                    <div class="site-meta">
+                    <div class="site-name" title="${site.SiteName}">${site.SiteName}</div>
+                    <div class="site-meta" title="${site.Model} ${site.ISP ? `- ${site.ISP}` : ''}">
                         ${site.Model} ${site.ISP ? `&nbsp;&nbsp;•&nbsp;&nbsp;<span class="isp-badge">📡 ${site.ISP}</span>` : ''}
                     </div>
                     
