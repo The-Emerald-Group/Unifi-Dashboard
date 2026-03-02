@@ -9,9 +9,9 @@ from http.server import SimpleHTTPRequestHandler, HTTPServer
 
 # --- CONFIGURATION ---
 API_KEY = os.environ.get("UNIFI_API_KEY")
-BASE_URL = "https://api.ui.com"
+BASE_URL = "https://api.ui.com/v1"
 DATA_FILE = "data.json"
-POLL_INTERVAL = 300  # 5 minutes
+POLL_INTERVAL = 300 
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -21,6 +21,7 @@ def harvest_data():
         log("!! ERROR: UNIFI_API_KEY environment variable is missing!")
         return
 
+    # Use the X-API-KEY header as per documentation
     headers = {
         "X-API-KEY": API_KEY,
         "Accept": "application/json"
@@ -28,101 +29,77 @@ def harvest_data():
 
     while True:
         try:
-            log(">>> Starting UniFi API Harvest...")
+            log(">>> Starting UniFi v1 Stable Harvest...")
             
-            res = requests.get(f"{BASE_URL}/ea/devices", headers=headers, timeout=30)
-            res.raise_for_status()
-            devices_data = res.json().get('data', [])
+            # 1. Get Sites (for friendly Names and Health Status)
+            sites_res = requests.get(f"{BASE_URL}/sites", headers=headers, timeout=30)
+            sites_res.raise_for_status()
+            sites_list = sites_res.json().get('data', [])
 
-            wallboard_data = {}
+            # 2. Get Devices (to match site IDs to hardware models)
+            dev_res = requests.get(f"{BASE_URL}/devices", headers=headers, timeout=30)
+            dev_res.raise_for_status()
+            devices_list = dev_res.json().get('data', [])
+
+            # Create a lookup for Site ID -> Hardware Model
+            site_models = {d.get('siteId'): d.get('productName') for d in devices_list if d.get('siteId')}
+
+            final_output = []
             current_time = datetime.now(timezone.utc)
 
-            for dev in devices_data:
-                name = dev.get("name") or dev.get("hostName") or dev.get("mac") or "Unnamed Gateway"
-                model = dev.get("productName") or dev.get("hardwareName") or dev.get("hardwareId") or "UniFi Gateway"
+            for site in sites_list:
+                site_id = site.get('id')
+                name = site.get('name') or "Unnamed Site"
+                model = site_models.get(site_id) or "UniFi Gateway"
                 
-                if name not in wallboard_data:
-                    wallboard_data[name] = {
-                        "DeviceName": name, 
-                        "Model": model,
-                        "Status": "Green", 
-                        "IssuesCount": 0, 
-                        "IssuesList": []
-                    }
+                # Default status
+                status = "Green"
+                weight = 0
+                issues = []
                 
-                state = str(dev.get("status", dev.get("state", "UNKNOWN"))).upper()
+                # --- CONNECTIVITY & TIMING ---
+                # Use reportedAt for accurate 'Last Seen' check
+                last_seen_str = site.get('reportedAt')
+                time_display = ""
                 
-                # --- OFFLINE LOGIC & TIME TRACKING ---
-                if state in ["OFFLINE", "DISCONNECTED", "ADOPTION_FAILED"]:
-                    # Look for UniFi's last seen timestamp
-                    last_seen_str = dev.get("lastSeenAt") or dev.get("lastReportedAt") or dev.get("lastSeen")
-                    time_display = "Currently Offline"
-                    issue_label = f"🚨 {state}"
-                    severity = "critical"
-                    weight = 2
-                    
-                    if last_seen_str:
-                        try:
-                            # Parse UniFi's ISO time format
-                            clean_ts = last_seen_str[:19]
-                            last_seen = datetime.strptime(clean_ts, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
-                            diff_mins = (current_time - last_seen).total_seconds() / 60
-                            
-                            # Format the time display
-                            if diff_mins > 2880: # Over 48 hours
-                                time_display = f"{int(diff_mins / 1440)}d ago"
-                            else:
-                                h = int(diff_mins // 60)
-                                m = int(diff_mins % 60)
-                                time_display = f"{h}h {m}m ago" if h > 0 else f"{m}m ago"
-                            
-                            # Apply Tiered Sorting Weights
-                            if diff_mins > 20160: # 14+ Days
-                                issue_label = "🕸️ HISTORICAL OFFLINE"
-                                severity = "stale"
-                                weight = 0.1
-                            elif diff_mins > 2880: # 48 Hours to 7 Days
-                                issue_label = "👻 LONG TERM OFFLINE"
-                                severity = "stale"
-                                weight = 0.5
-                            else: # Under 48 hours
-                                issue_label = "🚨 RECENTLY OFFLINE"
-                                severity = "critical"
-                                weight = 4 # HIGHEST weight ensures recent outages are #1
-                                
-                        except Exception:
-                            pass # Fallback to defaults if time parsing fails
-                            
-                    wallboard_data[name]["Status"] = "Red"
-                    wallboard_data[name]["IssuesCount"] += weight
-                    wallboard_data[name]["IssuesList"].append({
-                        "label": issue_label,
-                        "time": time_display,
-                        "severity": severity
-                    })
-                    
-                # --- WARNING & ISSUE DETECTION LOGIC ---
-                elif state in ["UPDATING", "PROVISIONING", "PENDING", "DEGRADED", "NEEDS_ATTENTION", "WARNING"]:
-                    if wallboard_data[name]["Status"] != "Red":
-                        wallboard_data[name]["Status"] = "Yellow"
-                    
-                    # Try to extract the exact reason from UniFi
-                    specific_issue = dev.get("stateReason") or dev.get("statusReason") or dev.get("issue")
-                    
-                    if specific_issue:
-                        issue_text = f"⚠️ Issue: {specific_issue}"
-                    else:
-                        issue_text = f"⚠️ {state}"
+                if last_seen_str:
+                    try:
+                        # Parse RFC3339 format
+                        clean_ts = last_seen_str.replace("Z", "+00:00")
+                        last_seen = datetime.fromisoformat(clean_ts)
+                        diff_mins = (current_time - last_seen).total_seconds() / 60
                         
-                    wallboard_data[name]["IssuesCount"] += 1
-                    wallboard_data[name]["IssuesList"].append({
-                        "label": issue_text,
-                        "time": "Active Warning",
-                        "severity": "warning"
-                    })
+                        if diff_mins > 2880: 
+                            time_display = f"{int(diff_mins / 1440)}d ago"
+                        else:
+                            h, m = divmod(int(diff_mins), 60)
+                            time_display = f"{h}h {m}m ago" if h > 0 else f"{m}m ago"
+                        
+                        # If no check-in for 12 mins, force Red
+                        if diff_mins > 12:
+                            status = "Red"
+                            weight = 10 if diff_mins < 1440 else 5 # Recent outages get highest weight
+                            issues.append({"label": "🚨 OFFLINE", "time": time_display, "severity": "critical"})
+                    except: pass
 
-            # Sort mathematically by IssuesCount (highest weight first), then alphabetically
-            final_output = sorted(wallboard_data.values(), key=lambda x: (-x['IssuesCount'], x['DeviceName']))
+                # --- ALERT DETECTION (Yellow) ---
+                # Check the statistics object provided in v1/sites
+                alerts = site.get('statistics', {}).get('alerts', 0)
+                if alerts > 0 and status != "Red":
+                    status = "Yellow"
+                    weight = 2
+                    issues.append({"label": f"⚠️ {alerts} Active Issues", "time": "Check Site Manager", "severity": "warning"})
+
+                final_output.append({
+                    "DeviceName": name,
+                    "Model": model,
+                    "Status": status,
+                    "IssuesCount": weight,
+                    "IssuesList": issues
+                })
+
+            # Sort: Priority weight (highest first) then Alphabetical
+            final_output.sort(key=lambda x: (-x['IssuesCount'], x['DeviceName']))
             
             payload = {
                 "timestamp": datetime.now().strftime("%H:%M:%S"),
@@ -131,17 +108,17 @@ def harvest_data():
             
             with open(DATA_FILE, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=4)
-            log("*** HARVEST SUCCESS ***")
+            log(f"*** HARVEST SUCCESS: {len(final_output)} sites processed ***")
             
         except Exception as e:
             log(f"!! ERROR: {str(e)}")
-            log(traceback.format_exc())
+            traceback.print_exc()
         
         time.sleep(POLL_INTERVAL)
 
+# Standard N-able style web server
 class MyHandler(SimpleHTTPRequestHandler):
-    def log_message(self, format, *args): 
-        pass 
+    def log_message(self, format, *args): pass 
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -149,9 +126,6 @@ class MyHandler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     if not os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "w") as f: 
-            json.dump({"timestamp": "N/A", "devices": []}, f)
-    
+        with open(DATA_FILE, "w") as f: json.dump({"timestamp": "N/A", "devices": []}, f)
     threading.Thread(target=harvest_data, daemon=True).start()
-    print("Web Server starting on port 8080...")
     HTTPServer(('0.0.0.0', 8080), MyHandler).serve_forever()
