@@ -14,33 +14,32 @@ from http.server import SimpleHTTPRequestHandler, HTTPServer
 # Suppress insecure HTTPS warnings for the classic controller
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION (PULLED FROM DOCKER COMPOSE) ---
 API_KEY = os.environ.get("UNIFI_API_KEY")
 MODERN_URL = "https://api.ui.com/v1"
 
-CLASSIC_URL = os.environ.get("CLASSIC_URL", "https://emerald.unificloud.co.uk:8443")
+CLASSIC_URL = os.environ.get("CLASSIC_URL")
 CLASSIC_USER = os.environ.get("CLASSIC_USER")
 CLASSIC_PASS = os.environ.get("CLASSIC_PASS")
+
+# --- SMTP EMAIL CONFIGURATION ---
+SMTP_SERVER = os.environ.get("SMTP_SERVER")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", 25))
+SMTP_USER = os.environ.get("SMTP_USER")
+SMTP_PASS = os.environ.get("SMTP_PASS")
+EMAIL_FROM = os.environ.get("EMAIL_FROM")
+EMAIL_TO = os.environ.get("EMAIL_TO")
+ALERT_THRESHOLD_SECONDS = 8 * 3600  # 8 Hours
 
 # --- PERMANENT DOCKER VOLUME STORAGE ---
 DATA_DIR = "/unifi_data"
 os.makedirs(DATA_DIR, exist_ok=True)
 DATA_FILE = f"{DATA_DIR}/data.json"
-# Renamed to v2 to force a completely clean slate without needing to delete files manually
 STATE_FILE = f"{DATA_DIR}/alerts_v2.json" 
 # ---------------------------------------
 
 POLL_INTERVAL = 300 
 ALERT_WINDOW_MINS = 240 
-
-# --- SMTP EMAIL CONFIGURATION ---
-SMTP_SERVER = "192.168.242.2"
-SMTP_PORT = 25
-SMTP_USER = "alerts@emerald-group.local"
-SMTP_PASS = "CrazyF00l"
-EMAIL_FROM = "unifi-alerts@emerald-group.co.uk"
-EMAIL_TO = "reports@emerald-group.co.uk"
-ALERT_THRESHOLD_SECONDS = 8 * 3600  # 8 Hours
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -144,6 +143,9 @@ def send_consolidated_recovery_alert(site_name, devices):
     return send_email(subject, html_body, site_name)
 
 def send_email(subject, html_body, log_identifier):
+    if not SMTP_SERVER or not EMAIL_TO:
+        return False
+        
     msg = MIMEMultipart('alternative')
     msg['From'] = EMAIL_FROM
     msg['To'] = EMAIL_TO
@@ -153,7 +155,8 @@ def send_email(subject, html_body, log_identifier):
     for attempt in range(1, 4):
         try:
             server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
-            server.login(SMTP_USER, SMTP_PASS)
+            if SMTP_USER and SMTP_PASS:
+                server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)
             log(f"*** EMAIL SENT for {log_identifier}: {subject} ***")
             try: server.quit() 
@@ -316,7 +319,9 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
     return cards
 
 def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
-    if not CLASSIC_USER or not CLASSIC_PASS: return []
+    if not CLASSIC_URL or not CLASSIC_USER or not CLASSIC_PASS: 
+        return []
+        
     cards = []
     current_time = datetime.now(timezone.utc)
     
@@ -437,7 +442,6 @@ def harvest_data():
         modern_cards = fetch_modern_unifi(alert_state, pending_offline, pending_recovery)
         classic_cards = fetch_classic_unifi(alert_state, pending_offline, pending_recovery)
         
-        # --- NEW: Explicitly log the email queue so you can see it in Portainer ---
         total_offline_queued = sum(len(v) for v in pending_offline.values())
         if total_offline_queued > 0:
             log(f"--> Queueing OFFLINE alerts for {total_offline_queued} devices across {len(pending_offline)} sites.")
