@@ -33,56 +33,125 @@ SMTP_PORT = 25
 SMTP_USER = "alerts@emerald-group.local"
 SMTP_PASS = "CrazyF00l"
 EMAIL_FROM = "unifi-alerts@emerald-group.co.uk"
-EMAIL_TO = "reports@emerald-group.co.uk"  # Updated Destination
+EMAIL_TO = "reports@emerald-group.co.uk"
 ALERT_THRESHOLD_SECONDS = 8 * 3600  # 8 Hours
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
 def send_offline_alert(site_name, device_name, device_model, offline_duration):
-    """Sends an SMTP email alert for a device that has been offline > 8 hours."""
-    subject = f"URGENT: UniFi Device Offline > 8 Hours - {site_name} ({device_name})"
+    """Sends a Red HTML alert for a device that has been offline > 8 hours."""
+    subject = f"🚨 URGENT: UniFi Device Offline - {site_name} ({device_name})"
     
-    body = f"""Hello,
+    html_body = f"""
+    <html>
+      <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f5f7; margin: 0; padding: 30px 10px;">
+        <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
+          <div style="background-color: #ff3b30; color: #ffffff; padding: 20px; text-align: center;">
+            <h2 style="margin: 0; font-size: 22px; letter-spacing: 1px;">🚨 DEVICE OFFLINE ALERT</h2>
+          </div>
+          <div style="padding: 30px;">
+            <p style="font-size: 16px; color: #444; line-height: 1.5; margin-top: 0;">
+              An automated alert has been triggered by the Emerald IT UniFi Monitor. A network device has been unreachable for <b>over 8 hours</b>.
+            </p>
+            <table style="width: 100%; border-collapse: collapse; margin-top: 25px; margin-bottom: 25px; background-color: #f9f9f9; border-radius: 6px; overflow: hidden;">
+              <tr>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #666; width: 35%;">Site Name</td>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; color: #222; font-weight: bold;">{site_name}</td>
+              </tr>
+              <tr>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #666;">Device Name</td>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; color: #222;">{device_name}</td>
+              </tr>
+              <tr>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #666;">Hardware Model</td>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; color: #222;">{device_model}</td>
+              </tr>
+              <tr>
+                <td style="padding: 12px 15px; font-weight: bold; color: #666;">Time Offline</td>
+                <td style="padding: 12px 15px; color: #ff3b30; font-weight: bold;">{offline_duration}</td>
+              </tr>
+            </table>
+            <h3 style="color: #222; font-size: 16px; margin-bottom: 10px; border-bottom: 2px solid #00A1E4; display: inline-block; padding-bottom: 5px;">Recommended Troubleshooting</h3>
+            <ul style="color: #555; line-height: 1.6; padding-left: 20px; font-size: 14px;">
+              <li style="margin-bottom: 6px;"><b>Power Check:</b> Verify the device is receiving power (check PoE switch port, PoE injector, or mains plug).</li>
+              <li style="margin-bottom: 6px;"><b>Cabling:</b> Ensure the uplink Ethernet cable is securely connected and not damaged.</li>
+              <li style="margin-bottom: 6px;"><b>Upstream Equipment:</b> Check if the switch port this device connects to is active and configured correctly.</li>
+              <li style="margin-bottom: 6px;"><b>Hard Reboot:</b> Try physically unplugging the device, waiting 10 seconds, and plugging it back in.</li>
+              <li style="margin-bottom: 6px;"><b>ISP Check:</b> If this device is a Gateway/Router, verify that the ISP modem is online.</li>
+            </ul>
+          </div>
+          <div style="background-color: #f1f1f1; padding: 15px; text-align: center; color: #888; font-size: 12px; border-top: 1px solid #eaeaea;">
+            <strong>Emerald IT</strong> • Automated Network Monitoring System
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+    return send_email(subject, html_body, device_name, site_name)
 
-This is an automated alert from the UniFi Monitor.
-
-A network device has been offline for more than 8 hours:
-- Site: {site_name}
-- Device Name: {device_name}
-- Model: {device_model}
-- Offline Duration: {offline_duration}
-
-Recommended Troubleshooting Steps:
-1. Power Check: Verify the device is receiving power (check the PoE switch port, PoE injector, or mains plug).
-2. Cabling: Ensure the uplink Ethernet cable is securely connected and not damaged.
-3. Upstream Equipment: Check if the switch port this device connects to is active and configured correctly.
-4. Hard Reboot: Try physically unplugging the device, waiting 10 seconds, and plugging it back in.
-5. ISP Check: If this device is a Gateway/Router, verify that the ISP modem is online and functioning.
-
-Thanks,
-Emerald IT UniFi Monitor
-"""
+def send_recovery_alert(site_name, device_name, device_model):
+    """Sends a Green HTML alert when a previously alerted device comes back online."""
+    subject = f"✅ RECOVERED: UniFi Device Online - {site_name} ({device_name})"
     
-    msg = MIMEMultipart()
+    html_body = f"""
+    <html>
+      <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f5f7; margin: 0; padding: 30px 10px;">
+        <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
+          <div style="background-color: #4cd964; color: #ffffff; padding: 20px; text-align: center;">
+            <h2 style="margin: 0; font-size: 22px; letter-spacing: 1px;">✅ DEVICE RECOVERED</h2>
+          </div>
+          <div style="padding: 30px;">
+            <p style="font-size: 16px; color: #444; line-height: 1.5; margin-top: 0;">
+              Good news! A network device that was previously offline has reconnected to the controller and is functioning normally.
+            </p>
+            <table style="width: 100%; border-collapse: collapse; margin-top: 25px; margin-bottom: 25px; background-color: #f9f9f9; border-radius: 6px; overflow: hidden;">
+              <tr>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #666; width: 35%;">Site Name</td>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; color: #222; font-weight: bold;">{site_name}</td>
+              </tr>
+              <tr>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #666;">Device Name</td>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; color: #222;">{device_name}</td>
+              </tr>
+              <tr>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #666;">Hardware Model</td>
+                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; color: #222;">{device_model}</td>
+              </tr>
+              <tr>
+                <td style="padding: 12px 15px; font-weight: bold; color: #666;">Current Status</td>
+                <td style="padding: 12px 15px; color: #4cd964; font-weight: bold;">ONLINE</td>
+              </tr>
+            </table>
+          </div>
+          <div style="background-color: #f1f1f1; padding: 15px; text-align: center; color: #888; font-size: 12px; border-top: 1px solid #eaeaea;">
+            <strong>Emerald IT</strong> • Automated Network Monitoring System
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+    return send_email(subject, html_body, device_name, site_name)
+
+def send_email(subject, html_body, device_name, site_name):
+    """Helper function to handle SMTP connection and retries."""
+    msg = MIMEMultipart('alternative')
     msg['From'] = EMAIL_FROM
     msg['To'] = EMAIL_TO
     msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'plain'))
+    msg.attach(MIMEText(html_body, 'html'))
 
-    # Retry logic
     for attempt in range(1, 4):
         try:
             server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
             server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)
             server.quit()
-            log(f"*** EMAIL SENT: {device_name} at {site_name} ***")
+            log(f"*** EMAIL SENT: {subject} ***")
             return True
         except Exception as e:
-            log(f"!! Email attempt {attempt} failed for {device_name}: {str(e)}")
+            log(f"!! Email attempt {attempt} failed for {device_name} at {site_name}: {str(e)}")
             time.sleep(5)
-            
     return False
 
 def format_duration(diff_sec):
@@ -181,8 +250,9 @@ def fetch_modern_unifi(alert_state):
                             if send_offline_alert(name, dev_name, dev_model, "> 30 days"):
                                 alert_state[dev_mac] = current_time.isoformat()
                 else:
-                    # Device is online, clear alert state
+                    # Device is ONLINE. If it was in alert_state, send recovery email and remove it.
                     if dev_mac in alert_state:
+                        send_recovery_alert(name, dev_name, dev_model)
                         del alert_state[dev_mac]
                 
                 inventory.append({
@@ -301,8 +371,9 @@ def fetch_classic_unifi(alert_state):
                         time_display = f"{offline_str} ago" if offline_str else "Offline"
                         issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
                 else:
-                    # Device is online, clear alert state
+                    # Device is ONLINE. If it was in alert_state, send recovery email and remove it.
                     if dev_mac in alert_state:
+                        send_recovery_alert(site_desc, d_name, d_model)
                         del alert_state[dev_mac]
 
                 inventory.append({
@@ -342,7 +413,6 @@ def fetch_classic_unifi(alert_state):
     return cards
 
 def harvest_data():
-    # Load previously sent alerts
     alert_state = {}
     if os.path.exists(STATE_FILE):
         try:
@@ -358,11 +428,9 @@ def harvest_data():
         all_cards = modern_cards + classic_cards
         all_cards.sort(key=lambda x: (-x['IssuesCount'], x['SiteName']))
         
-        # Save dashboard data
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump({"timestamp": datetime.now().strftime("%H:%M:%S"), "sites": all_cards}, f, indent=4)
             
-        # Save alert state to avoid repeat emails
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(alert_state, f)
             
