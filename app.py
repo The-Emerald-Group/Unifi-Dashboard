@@ -22,8 +22,13 @@ CLASSIC_URL = os.environ.get("CLASSIC_URL", "https://emerald.unificloud.co.uk:84
 CLASSIC_USER = os.environ.get("CLASSIC_USER")
 CLASSIC_PASS = os.environ.get("CLASSIC_PASS")
 
-DATA_FILE = "data.json"
-STATE_FILE = "alerts.json" # Tracks which devices we have already emailed about
+# --- PERMANENT DOCKER VOLUME STORAGE ---
+DATA_DIR = "/unifi_data"
+os.makedirs(DATA_DIR, exist_ok=True)
+DATA_FILE = f"{DATA_DIR}/data.json"
+STATE_FILE = f"{DATA_DIR}/alerts.json" 
+# ---------------------------------------
+
 POLL_INTERVAL = 300 
 ALERT_WINDOW_MINS = 240 
 
@@ -134,7 +139,7 @@ def send_recovery_alert(site_name, device_name, device_model):
     return send_email(subject, html_body, device_name, site_name)
 
 def send_email(subject, html_body, device_name, site_name):
-    """Helper function to handle SMTP connection and retries."""
+    """Helper function to handle SMTP connection and retries with anti-duplicate logic."""
     msg = MIMEMultipart('alternative')
     msg['From'] = EMAIL_FROM
     msg['To'] = EMAIL_TO
@@ -145,9 +150,17 @@ def send_email(subject, html_body, device_name, site_name):
         try:
             server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
             server.login(SMTP_USER, SMTP_PASS)
+            
+            # Send message and immediately log success to avoid duplicate retries
             server.send_message(msg)
-            server.quit()
             log(f"*** EMAIL SENT: {subject} ***")
+            
+            # Wrap quit in a try/except so a hanging relay doesn't trigger a retry loop
+            try:
+                server.quit()
+            except Exception:
+                pass
+                
             return True
         except Exception as e:
             log(f"!! Email attempt {attempt} failed for {device_name} at {site_name}: {str(e)}")
@@ -217,8 +230,11 @@ def fetch_modern_unifi(alert_state):
                 dev_status = str(d.get('status', 'unknown')).lower()
                 has_update = d.get('firmwareStatus') == 'updateAvailable'
                 dev_mac = d.get('mac')
-                dev_name = d.get("name") or dev_mac
+                dev_name = d.get("name") or dev_mac or "Unknown Device"
                 dev_model = d.get("model") or "UniFi Device"
+                
+                # Create a bulletproof unique ID for the alert dictionary
+                alert_key = dev_mac or f"{name}_{dev_name}"
                 offline_str = ""
 
                 if d.get('isConsole'):
@@ -236,24 +252,20 @@ def fetch_modern_unifi(alert_state):
                             diff_sec = (current_time - last_seen_dt).total_seconds()
                             offline_str = format_duration(diff_sec)
                             
-                            # --- EMAIL ALERT LOGIC ---
-                            if diff_sec >= ALERT_THRESHOLD_SECONDS and dev_mac not in alert_state:
+                            if diff_sec >= ALERT_THRESHOLD_SECONDS and alert_key not in alert_state:
                                 if send_offline_alert(name, dev_name, dev_model, offline_str):
-                                    alert_state[dev_mac] = current_time.isoformat()
-                                    
+                                    alert_state[alert_key] = current_time.isoformat()
                         except: 
                             offline_str = ">30d"
                     else:
                         offline_str = ">30d"
-                        # Fallback alert for >30d
-                        if dev_mac not in alert_state:
+                        if alert_key not in alert_state:
                             if send_offline_alert(name, dev_name, dev_model, "> 30 days"):
-                                alert_state[dev_mac] = current_time.isoformat()
+                                alert_state[alert_key] = current_time.isoformat()
                 else:
-                    # Device is ONLINE. If it was in alert_state, send recovery email and remove it.
-                    if dev_mac in alert_state:
+                    if alert_key in alert_state:
                         send_recovery_alert(name, dev_name, dev_model)
-                        del alert_state[dev_mac]
+                        del alert_state[alert_key]
                 
                 inventory.append({
                     "name": dev_name,
@@ -337,6 +349,9 @@ def fetch_classic_unifi(alert_state):
                 dev_mac = dev.get("mac")
                 d_name = dev.get("name") or dev_mac or "Unknown Device"
                 d_model = dev.get("model", "UniFi Device")
+                
+                # Create a bulletproof unique ID for the alert dictionary
+                alert_key = dev_mac or f"{site_desc}_{d_name}"
                 is_offline = (dev.get("state", 0) == 0)
                 offline_str = ""
 
@@ -352,29 +367,25 @@ def fetch_classic_unifi(alert_state):
                             diff_sec = (current_time - datetime.fromtimestamp(float(last_seen), timezone.utc)).total_seconds()
                             offline_str = format_duration(diff_sec)
                             
-                            # --- EMAIL ALERT LOGIC ---
-                            if diff_sec >= ALERT_THRESHOLD_SECONDS and dev_mac not in alert_state:
+                            if diff_sec >= ALERT_THRESHOLD_SECONDS and alert_key not in alert_state:
                                 if send_offline_alert(site_desc, d_name, d_model, offline_str):
-                                    alert_state[dev_mac] = current_time.isoformat()
-                                    
+                                    alert_state[alert_key] = current_time.isoformat()
                         except Exception:
                             offline_str = ">30d"
                     else:
                         offline_str = ">30d"
-                        # Fallback alert
-                        if dev_mac not in alert_state:
+                        if alert_key not in alert_state:
                             if send_offline_alert(site_desc, d_name, d_model, "> 30 days"):
-                                alert_state[dev_mac] = current_time.isoformat()
+                                alert_state[alert_key] = current_time.isoformat()
 
                     if dev.get('type') == 'ugw':
                         status = "Red"; weight = 20
                         time_display = f"{offline_str} ago" if offline_str else "Offline"
                         issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
                 else:
-                    # Device is ONLINE. If it was in alert_state, send recovery email and remove it.
-                    if dev_mac in alert_state:
+                    if alert_key in alert_state:
                         send_recovery_alert(site_desc, d_name, d_model)
-                        del alert_state[dev_mac]
+                        del alert_state[alert_key]
 
                 inventory.append({
                     "name": d_name,
@@ -445,6 +456,8 @@ class MyHandler(SimpleHTTPRequestHandler):
         SimpleHTTPRequestHandler.end_headers(self)
 
 if __name__ == "__main__":
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR, exist_ok=True)
     if not os.path.exists(DATA_FILE):
         with open(DATA_FILE, "w") as f: json.dump({"timestamp": "N/A", "sites": []}, f)
     threading.Thread(target=harvest_data, daemon=True).start()
