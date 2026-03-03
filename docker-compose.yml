@@ -8,20 +8,23 @@ services:
       - unifi_alert_data:/unifi_data
     environment:
       # --- Modern Site Manager (unifi.ui.com) ---
-      - UNIFI_API_KEY=your_unifi_api_key_here
+      - UNIFI_API_KEY=YOUR_UNIFI_API_KEY_HERE
       
       # --- Classic Cloud Controller ---
-      - CLASSIC_URL=https://your_classic_controller_url:8443
-      - CLASSIC_USER=your_local_admin_username
-      - CLASSIC_PASS=your_local_admin_password
+      - CLASSIC_URL=https://your.classic.controller:8443
+      - CLASSIC_USER=YOUR_USERNAME
+      - CLASSIC_PASS=YOUR_PASSWORD
       
       # --- SMTP Email Alerts ---
-      - SMTP_SERVER=your_smtp_ip_here
+      - SMTP_SERVER=your.smtp.server.ip
       - SMTP_PORT=25
-      - SMTP_USER=your_smtp_username
+      - SMTP_USER=your_smtp_user
       - SMTP_PASS=your_smtp_password
-      - EMAIL_FROM=unifi-alerts@yourdomain.com
+      - EMAIL_FROM=alerts@yourdomain.com
       - EMAIL_TO=reports@yourdomain.com
+      
+      # --- Exclusions (Comma-separated list of exact site names) ---
+      - IGNORE_SITES=Test Site 1, Lab Network, Decommissioned Office
       
       # --- Python Environment ---
       - PYTHONUNBUFFERED=1
@@ -33,6 +36,6 @@ services:
       start_period: 15s
     restart: always
 
-# Required to tell Docker/Portainer to manage the persistent storage
+# Required for Portainer/Docker to manage persistent storage
 volumes:
   unifi_alert_data:
