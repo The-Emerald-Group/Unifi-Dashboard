@@ -44,46 +44,53 @@ ALERT_THRESHOLD_SECONDS = 8 * 3600  # 8 Hours
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
-def send_offline_alert(site_name, device_name, device_model, offline_duration):
-    """Sends a Red HTML alert for a device that has been offline > 8 hours."""
-    subject = f"🚨 URGENT: UniFi Device Offline - {site_name} ({device_name})"
+def send_consolidated_offline_alert(site_name, devices):
+    """Sends a single Red HTML alert containing multiple offline devices for a site."""
+    count = len(devices)
+    s_plural = "s" if count > 1 else ""
+    is_are = "are" if count > 1 else "is"
+    
+    subject = f"🚨 URGENT: {count} UniFi Device{s_plural} Offline - {site_name}"
+    
+    # Build table rows dynamically
+    table_rows = ""
+    for d in devices:
+        table_rows += f"""
+        <tr>
+          <td style="padding: 10px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #222;">{d['name']}</td>
+          <td style="padding: 10px 15px; border-bottom: 1px solid #eaeaea; color: #666;">{d['model']}</td>
+          <td style="padding: 10px 15px; border-bottom: 1px solid #eaeaea; color: #ff3b30; font-weight: bold;">{d['duration']}</td>
+        </tr>
+        """
     
     html_body = f"""
     <html>
       <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f5f7; margin: 0; padding: 30px 10px;">
-        <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
+        <div style="max-width: 650px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
           <div style="background-color: #ff3b30; color: #ffffff; padding: 20px; text-align: center;">
-            <h2 style="margin: 0; font-size: 22px; letter-spacing: 1px;">🚨 DEVICE OFFLINE ALERT</h2>
+            <h2 style="margin: 0; font-size: 22px; letter-spacing: 1px;">🚨 DEVICE{s_plural.upper()} OFFLINE ALERT</h2>
           </div>
           <div style="padding: 30px;">
             <p style="font-size: 16px; color: #444; line-height: 1.5; margin-top: 0;">
-              An automated alert has been triggered by the Emerald IT UniFi Monitor. A network device has been unreachable for <b>over 8 hours</b>.
+              An automated alert has been triggered by the Emerald IT UniFi Monitor. <b>{count} network device{s_plural}</b> at <strong>{site_name}</strong> {is_are} unreachable for over 8 hours.
             </p>
-            <table style="width: 100%; border-collapse: collapse; margin-top: 25px; margin-bottom: 25px; background-color: #f9f9f9; border-radius: 6px; overflow: hidden;">
-              <tr>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #666; width: 35%;">Site Name</td>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; color: #222; font-weight: bold;">{site_name}</td>
+            
+            <table style="width: 100%; border-collapse: collapse; margin-top: 20px; margin-bottom: 25px; background-color: #f9f9f9; border-radius: 6px; overflow: hidden; text-align: left;">
+              <tr style="background-color: #eaeaea;">
+                <th style="padding: 12px 15px; color: #444; font-size: 14px;">Device Name</th>
+                <th style="padding: 12px 15px; color: #444; font-size: 14px;">Hardware Model</th>
+                <th style="padding: 12px 15px; color: #444; font-size: 14px;">Time Offline</th>
               </tr>
-              <tr>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #666;">Device Name</td>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; color: #222;">{device_name}</td>
-              </tr>
-              <tr>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #666;">Hardware Model</td>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; color: #222;">{device_model}</td>
-              </tr>
-              <tr>
-                <td style="padding: 12px 15px; font-weight: bold; color: #666;">Time Offline</td>
-                <td style="padding: 12px 15px; color: #ff3b30; font-weight: bold;">{offline_duration}</td>
-              </tr>
+              {table_rows}
             </table>
+
             <h3 style="color: #222; font-size: 16px; margin-bottom: 10px; border-bottom: 2px solid #00A1E4; display: inline-block; padding-bottom: 5px;">Recommended Troubleshooting</h3>
             <ul style="color: #555; line-height: 1.6; padding-left: 20px; font-size: 14px;">
               <li style="margin-bottom: 6px;"><b>Power Check:</b> Verify the device is receiving power (check PoE switch port, PoE injector, or mains plug).</li>
               <li style="margin-bottom: 6px;"><b>Cabling:</b> Ensure the uplink Ethernet cable is securely connected and not damaged.</li>
-              <li style="margin-bottom: 6px;"><b>Upstream Equipment:</b> Check if the switch port this device connects to is active and configured correctly.</li>
+              <li style="margin-bottom: 6px;"><b>Upstream Equipment:</b> Check if the switch port this device connects to is active.</li>
               <li style="margin-bottom: 6px;"><b>Hard Reboot:</b> Try physically unplugging the device, waiting 10 seconds, and plugging it back in.</li>
-              <li style="margin-bottom: 6px;"><b>ISP Check:</b> If this device is a Gateway/Router, verify that the ISP modem is online.</li>
+              <li style="margin-bottom: 6px;"><b>ISP Check:</b> If a Gateway/Router is offline, verify that the ISP modem is online.</li>
             </ul>
           </div>
           <div style="background-color: #f1f1f1; padding: 15px; text-align: center; color: #888; font-size: 12px; border-top: 1px solid #eaeaea;">
@@ -93,40 +100,42 @@ def send_offline_alert(site_name, device_name, device_model, offline_duration):
       </body>
     </html>
     """
-    return send_email(subject, html_body, device_name, site_name)
+    return send_email(subject, html_body, site_name)
 
-def send_recovery_alert(site_name, device_name, device_model):
-    """Sends a Green HTML alert when a previously alerted device comes back online."""
-    subject = f"✅ RECOVERED: UniFi Device Online - {site_name} ({device_name})"
+def send_consolidated_recovery_alert(site_name, devices):
+    """Sends a single Green HTML alert when multiple devices come back online."""
+    count = len(devices)
+    s_plural = "s" if count > 1 else ""
+    subject = f"✅ RECOVERED: {count} UniFi Device{s_plural} Online - {site_name}"
     
+    table_rows = ""
+    for d in devices:
+        table_rows += f"""
+        <tr>
+          <td style="padding: 10px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #222;">{d['name']}</td>
+          <td style="padding: 10px 15px; border-bottom: 1px solid #eaeaea; color: #666;">{d['model']}</td>
+          <td style="padding: 10px 15px; border-bottom: 1px solid #eaeaea; color: #4cd964; font-weight: bold;">ONLINE</td>
+        </tr>
+        """
+
     html_body = f"""
     <html>
       <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f5f7; margin: 0; padding: 30px 10px;">
-        <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
+        <div style="max-width: 650px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
           <div style="background-color: #4cd964; color: #ffffff; padding: 20px; text-align: center;">
-            <h2 style="margin: 0; font-size: 22px; letter-spacing: 1px;">✅ DEVICE RECOVERED</h2>
+            <h2 style="margin: 0; font-size: 22px; letter-spacing: 1px;">✅ DEVICE{s_plural.upper()} RECOVERED</h2>
           </div>
           <div style="padding: 30px;">
             <p style="font-size: 16px; color: #444; line-height: 1.5; margin-top: 0;">
-              Good news! A network device that was previously offline has reconnected to the controller and is functioning normally.
+              Good news! <b>{count} network device{s_plural}</b> at <strong>{site_name}</strong> that previously triggered an alert have reconnected to the controller and are functioning normally.
             </p>
-            <table style="width: 100%; border-collapse: collapse; margin-top: 25px; margin-bottom: 25px; background-color: #f9f9f9; border-radius: 6px; overflow: hidden;">
-              <tr>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #666; width: 35%;">Site Name</td>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; color: #222; font-weight: bold;">{site_name}</td>
+            <table style="width: 100%; border-collapse: collapse; margin-top: 20px; margin-bottom: 25px; background-color: #f9f9f9; border-radius: 6px; overflow: hidden; text-align: left;">
+              <tr style="background-color: #eaeaea;">
+                <th style="padding: 12px 15px; color: #444; font-size: 14px;">Device Name</th>
+                <th style="padding: 12px 15px; color: #444; font-size: 14px;">Hardware Model</th>
+                <th style="padding: 12px 15px; color: #444; font-size: 14px;">Current Status</th>
               </tr>
-              <tr>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #666;">Device Name</td>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; color: #222;">{device_name}</td>
-              </tr>
-              <tr>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #666;">Hardware Model</td>
-                <td style="padding: 12px 15px; border-bottom: 1px solid #eaeaea; color: #222;">{device_model}</td>
-              </tr>
-              <tr>
-                <td style="padding: 12px 15px; font-weight: bold; color: #666;">Current Status</td>
-                <td style="padding: 12px 15px; color: #4cd964; font-weight: bold;">ONLINE</td>
-              </tr>
+              {table_rows}
             </table>
           </div>
           <div style="background-color: #f1f1f1; padding: 15px; text-align: center; color: #888; font-size: 12px; border-top: 1px solid #eaeaea;">
@@ -136,10 +145,10 @@ def send_recovery_alert(site_name, device_name, device_model):
       </body>
     </html>
     """
-    return send_email(subject, html_body, device_name, site_name)
+    return send_email(subject, html_body, site_name)
 
-def send_email(subject, html_body, device_name, site_name):
-    """Helper function to handle SMTP connection and retries with anti-duplicate logic."""
+def send_email(subject, html_body, log_identifier):
+    """Helper function to handle SMTP connection and retries."""
     msg = MIMEMultipart('alternative')
     msg['From'] = EMAIL_FROM
     msg['To'] = EMAIL_TO
@@ -150,20 +159,13 @@ def send_email(subject, html_body, device_name, site_name):
         try:
             server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
             server.login(SMTP_USER, SMTP_PASS)
-            
-            # Send message and immediately log success to avoid duplicate retries
             server.send_message(msg)
-            log(f"*** EMAIL SENT: {subject} ***")
-            
-            # Wrap quit in a try/except so a hanging relay doesn't trigger a retry loop
-            try:
-                server.quit()
-            except Exception:
-                pass
-                
+            log(f"*** EMAIL SENT for {log_identifier}: {subject} ***")
+            try: server.quit() 
+            except Exception: pass
             return True
         except Exception as e:
-            log(f"!! Email attempt {attempt} failed for {device_name} at {site_name}: {str(e)}")
+            log(f"!! Email attempt {attempt} failed for {log_identifier}: {str(e)}")
             time.sleep(5)
     return False
 
@@ -192,12 +194,11 @@ def parse_iso_time(ts_str):
     except Exception:
         return None
 
-def fetch_modern_unifi(alert_state):
+def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
     if not API_KEY: return []
     cards = []
     try:
         headers = {"X-API-KEY": API_KEY, "Accept": "application/json"}
-        
         dev_res = requests.get(f"{MODERN_URL}/devices", headers=headers, timeout=30).json().get('data', [])
         sites_res = requests.get(f"{MODERN_URL}/sites", headers=headers, timeout=30).json().get('data', [])
         hosts_res = requests.get(f"{MODERN_URL}/hosts", headers=headers, timeout=30).json().get('data', [])
@@ -232,8 +233,6 @@ def fetch_modern_unifi(alert_state):
                 dev_mac = d.get('mac')
                 dev_name = d.get("name") or dev_mac or "Unknown Device"
                 dev_model = d.get("model") or "UniFi Device"
-                
-                # Create a bulletproof unique ID for the alert dictionary
                 alert_key = dev_mac or f"{name}_{dev_name}"
                 offline_str = ""
 
@@ -253,19 +252,19 @@ def fetch_modern_unifi(alert_state):
                             offline_str = format_duration(diff_sec)
                             
                             if diff_sec >= ALERT_THRESHOLD_SECONDS and alert_key not in alert_state:
-                                if send_offline_alert(name, dev_name, dev_model, offline_str):
-                                    alert_state[alert_key] = current_time.isoformat()
+                                if name not in pending_offline: pending_offline[name] = []
+                                pending_offline[name].append({"name": dev_name, "model": dev_model, "duration": offline_str, "mac": alert_key})
                         except: 
                             offline_str = ">30d"
                     else:
                         offline_str = ">30d"
                         if alert_key not in alert_state:
-                            if send_offline_alert(name, dev_name, dev_model, "> 30 days"):
-                                alert_state[alert_key] = current_time.isoformat()
+                            if name not in pending_offline: pending_offline[name] = []
+                            pending_offline[name].append({"name": dev_name, "model": dev_model, "duration": "> 30 days", "mac": alert_key})
                 else:
                     if alert_key in alert_state:
-                        send_recovery_alert(name, dev_name, dev_model)
-                        del alert_state[alert_key]
+                        if name not in pending_recovery: pending_recovery[name] = []
+                        pending_recovery[name].append({"name": dev_name, "model": dev_model, "mac": alert_key})
                 
                 inventory.append({
                     "name": dev_name,
@@ -318,7 +317,7 @@ def fetch_modern_unifi(alert_state):
     
     return cards
 
-def fetch_classic_unifi(alert_state):
+def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
     if not CLASSIC_USER or not CLASSIC_PASS: return []
     cards = []
     current_time = datetime.now(timezone.utc)
@@ -349,8 +348,6 @@ def fetch_classic_unifi(alert_state):
                 dev_mac = dev.get("mac")
                 d_name = dev.get("name") or dev_mac or "Unknown Device"
                 d_model = dev.get("model", "UniFi Device")
-                
-                # Create a bulletproof unique ID for the alert dictionary
                 alert_key = dev_mac or f"{site_desc}_{d_name}"
                 is_offline = (dev.get("state", 0) == 0)
                 offline_str = ""
@@ -368,15 +365,15 @@ def fetch_classic_unifi(alert_state):
                             offline_str = format_duration(diff_sec)
                             
                             if diff_sec >= ALERT_THRESHOLD_SECONDS and alert_key not in alert_state:
-                                if send_offline_alert(site_desc, d_name, d_model, offline_str):
-                                    alert_state[alert_key] = current_time.isoformat()
+                                if site_desc not in pending_offline: pending_offline[site_desc] = []
+                                pending_offline[site_desc].append({"name": d_name, "model": d_model, "duration": offline_str, "mac": alert_key})
                         except Exception:
                             offline_str = ">30d"
                     else:
                         offline_str = ">30d"
                         if alert_key not in alert_state:
-                            if send_offline_alert(site_desc, d_name, d_model, "> 30 days"):
-                                alert_state[alert_key] = current_time.isoformat()
+                            if site_desc not in pending_offline: pending_offline[site_desc] = []
+                            pending_offline[site_desc].append({"name": d_name, "model": d_model, "duration": "> 30 days", "mac": alert_key})
 
                     if dev.get('type') == 'ugw':
                         status = "Red"; weight = 20
@@ -384,8 +381,8 @@ def fetch_classic_unifi(alert_state):
                         issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
                 else:
                     if alert_key in alert_state:
-                        send_recovery_alert(site_desc, d_name, d_model)
-                        del alert_state[alert_key]
+                        if site_desc not in pending_recovery: pending_recovery[site_desc] = []
+                        pending_recovery[site_desc].append({"name": d_name, "model": d_model, "mac": alert_key})
 
                 inventory.append({
                     "name": d_name,
@@ -427,15 +424,35 @@ def harvest_data():
     alert_state = {}
     if os.path.exists(STATE_FILE):
         try:
-            with open(STATE_FILE, "r") as f:
-                alert_state = json.load(f)
+            with open(STATE_FILE, "r") as f: alert_state = json.load(f)
         except Exception: pass
 
     while True:
         log(">>> Starting Unified Multi-Controller Harvest...")
-        modern_cards = fetch_modern_unifi(alert_state)
-        classic_cards = fetch_classic_unifi(alert_state)
         
+        # Dictionaries to gather all alerts triggered in this 5-minute window
+        pending_offline = {}
+        pending_recovery = {}
+
+        modern_cards = fetch_modern_unifi(alert_state, pending_offline, pending_recovery)
+        classic_cards = fetch_classic_unifi(alert_state, pending_offline, pending_recovery)
+        
+        # 1. Dispatch Consolidated Offline Emails
+        for site, devices in pending_offline.items():
+            if send_consolidated_offline_alert(site, devices):
+                # If email succeeds, register ALL these devices so we don't alert again
+                for d in devices:
+                    alert_state[d['mac']] = datetime.now(timezone.utc).isoformat()
+
+        # 2. Dispatch Consolidated Recovery Emails
+        for site, devices in pending_recovery.items():
+            if send_consolidated_recovery_alert(site, devices):
+                # If email succeeds, clear ALL these devices from the log
+                for d in devices:
+                    if d['mac'] in alert_state:
+                        del alert_state[d['mac']]
+
+        # Finalize and Save Data
         all_cards = modern_cards + classic_cards
         all_cards.sort(key=lambda x: (-x['IssuesCount'], x['SiteName']))
         
