@@ -488,6 +488,14 @@ def harvest_data():
 
 class MyHandler(SimpleHTTPRequestHandler):
     def log_message(self, format, *args): pass 
+    
+    # --- REDIRECT FIX: Send browser to data.json if they just hit the IP ---
+    def do_GET(self):
+        if self.path == '/':
+            self.path = '/data.json'
+        return SimpleHTTPRequestHandler.do_GET(self)
+    # ------------------------------------------------------------------------
+    
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -501,8 +509,8 @@ if __name__ == "__main__":
         
     threading.Thread(target=harvest_data, daemon=True).start()
     
-    # --- THIS IS THE FIX ---
+    # --- CHANGE DIRECTORY FIX: Server now looks in the persistent volume ---
     os.chdir(DATA_DIR)
-    # -----------------------
+    # -----------------------------------------------------------------------
     
     HTTPServer(('0.0.0.0', 8080), MyHandler).serve_forever()
