@@ -498,5 +498,11 @@ if __name__ == "__main__":
         os.makedirs(DATA_DIR, exist_ok=True)
     if not os.path.exists(DATA_FILE):
         with open(DATA_FILE, "w") as f: json.dump({"timestamp": "N/A", "sites": []}, f)
+        
     threading.Thread(target=harvest_data, daemon=True).start()
+    
+    # --- THIS IS THE FIX ---
+    os.chdir(DATA_DIR)
+    # -----------------------
+    
     HTTPServer(('0.0.0.0', 8080), MyHandler).serve_forever()
