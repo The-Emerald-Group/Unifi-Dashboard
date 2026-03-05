@@ -49,6 +49,7 @@ TEMP_STATE_FILE = f"{DATA_DIR}/alerts_v2.tmp.json" # <-- Added temporary file fo
 
 POLL_INTERVAL = 300 
 ALERT_WINDOW_MINS = 240 
+HISTORICAL_OFFLINE_SECONDS = 2592000  # 30 Days
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -236,6 +237,8 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             inventory = []
             primary_model = None 
             offline_devs = 0
+            historical_devs = 0
+            recent_devs = 0
             total_devs = len(devices_list)
 
             for d in devices_list:
@@ -246,6 +249,7 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                 dev_model = d.get("model") or "UniFi Device"
                 alert_key = dev_mac or f"{name}_{dev_name}"
                 offline_str = ""
+                is_historical = False
 
                 if d.get('isConsole'):
                     primary_model = dev_model
@@ -261,20 +265,30 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                         try:
                             diff_sec = (current_time - last_seen_dt).total_seconds()
                             offline_str = format_duration(diff_sec)
+                            if diff_sec >= HISTORICAL_OFFLINE_SECONDS:
+                                is_historical = True
                             
                             if diff_sec >= ALERT_THRESHOLD_SECONDS and alert_key not in alert_state:
                                 if name not in pending_offline: pending_offline[name] = []
                                 pending_offline[name].append({"name": dev_name, "model": dev_model, "duration": offline_str, "mac": alert_key})
                         except Exception: 
                             offline_str = ">30d"
+                            is_historical = True
                             if alert_key not in alert_state:
                                 if name not in pending_offline: pending_offline[name] = []
                                 pending_offline[name].append({"name": dev_name, "model": dev_model, "duration": "> 30 days", "mac": alert_key})
                     else:
                         offline_str = ">30d"
+                        is_historical = True
                         if alert_key not in alert_state:
                             if name not in pending_offline: pending_offline[name] = []
                             pending_offline[name].append({"name": dev_name, "model": dev_model, "duration": "> 30 days", "mac": alert_key})
+                            
+                    if is_historical:
+                        historical_devs += 1
+                    else:
+                        recent_devs += 1
+                        
                 else:
                     if alert_key in alert_state:
                         if name not in pending_recovery: pending_recovery[name] = []
@@ -289,13 +303,22 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                 })
 
                 if d.get('isConsole') and dev_status != "online":
-                    status = "Red"; weight = 20
-                    time_display = f"{offline_str} ago" if offline_str else "Critical"
-                    issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
+                    if is_historical:
+                        if status != "Red": 
+                            status = "Grey"; weight = 5
+                        issues.append({"label": "💤 GATEWAY HISTORICALLY DOWN", "time": "> 30d", "severity": "historical"})
+                    else:
+                        status = "Red"; weight = 20
+                        time_display = f"{offline_str} ago" if offline_str else "Critical"
+                        issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
 
             if total_devs > 0 and offline_devs == total_devs and status != "Red":
-                status = "Red"; weight = 20
-                issues.append({"label": "🚨 SITE COMPLETELY OFFLINE", "time": "Critical", "severity": "critical"})
+                if offline_devs == historical_devs:
+                    status = "Grey"; weight = 5
+                    issues.append({"label": "💤 SITE HISTORICALLY OFFLINE", "time": "> 30d", "severity": "historical"})
+                else:
+                    status = "Red"; weight = 20
+                    issues.append({"label": "🚨 SITE COMPLETELY OFFLINE", "time": "Critical", "severity": "critical"})
 
             if not primary_model and devices_list:
                 primary_model = devices_list[0].get('model', 'Gateway')
@@ -309,13 +332,19 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                     if (current_bucket - iss.get('index', 0)) <= (ALERT_WINDOW_MINS / 5):
                         active_isp = True; break
 
-                if offline_devs > 0:
-                    status = "Yellow"; weight = 10
-                    issues.append({"label": f"⚠️ {offline_devs} Device(s) Offline", "time": "Partial", "severity": "warning"})
-                
                 if active_isp:
-                    status = "Yellow"; weight = 15  # <--- CHANGED TO 15
+                    status = "Yellow"; weight = 15
                     issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 4h ago", "severity": "warning"})
+                    
+                if recent_devs > 0:
+                    if weight < 10: 
+                        status = "Yellow"; weight = 10
+                    issues.append({"label": f"⚠️ {recent_devs} Device(s) Offline", "time": "Partial", "severity": "warning"})
+                    
+                if historical_devs > 0 and not any(i['severity'] == 'historical' for i in issues):
+                    if weight < 5: 
+                        status = "Grey"; weight = 5
+                    issues.append({"label": f"💤 {historical_devs} Device(s) Historically Down", "time": "> 30d", "severity": "historical"})
 
             cards.append({
                 "SiteName": name,
@@ -363,6 +392,8 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
             issues = []
             inventory = []
             offline_count = 0
+            historical_devs = 0
+            recent_devs = 0
             primary_model = None
             total_devs = len(dev_res)
 
@@ -373,6 +404,7 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
                 alert_key = dev_mac or f"{site_desc}_{d_name}"
                 is_offline = (dev.get("state", 0) == 0)
                 offline_str = ""
+                is_historical = False
 
                 if dev.get('type') == 'ugw':
                     primary_model = d_model
@@ -385,25 +417,39 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
                         try:
                             diff_sec = (current_time - datetime.fromtimestamp(float(last_seen), timezone.utc)).total_seconds()
                             offline_str = format_duration(diff_sec)
-                            
+                            if diff_sec >= HISTORICAL_OFFLINE_SECONDS:
+                                is_historical = True
+                                
                             if diff_sec >= ALERT_THRESHOLD_SECONDS and alert_key not in alert_state:
                                 if site_desc not in pending_offline: pending_offline[site_desc] = []
                                 pending_offline[site_desc].append({"name": d_name, "model": d_model, "duration": offline_str, "mac": alert_key})
                         except Exception:
                             offline_str = ">30d"
+                            is_historical = True
                             if alert_key not in alert_state:
                                 if site_desc not in pending_offline: pending_offline[site_desc] = []
                                 pending_offline[site_desc].append({"name": d_name, "model": d_model, "duration": "> 30 days", "mac": alert_key})
                     else:
                         offline_str = ">30d"
+                        is_historical = True
                         if alert_key not in alert_state:
                             if site_desc not in pending_offline: pending_offline[site_desc] = []
                             pending_offline[site_desc].append({"name": d_name, "model": d_model, "duration": "> 30 days", "mac": alert_key})
 
+                    if is_historical:
+                        historical_devs += 1
+                    else:
+                        recent_devs += 1
+
                     if dev.get('type') == 'ugw':
-                        status = "Red"; weight = 20
-                        time_display = f"{offline_str} ago" if offline_str else "Offline"
-                        issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
+                        if is_historical:
+                            if status != "Red": 
+                                status = "Grey"; weight = 5
+                            issues.append({"label": "💤 GATEWAY HISTORICALLY DOWN", "time": "> 30d", "severity": "historical"})
+                        else:
+                            status = "Red"; weight = 20
+                            time_display = f"{offline_str} ago" if offline_str else "Offline"
+                            issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
                 else:
                     if alert_key in alert_state:
                         if site_desc not in pending_recovery: pending_recovery[site_desc] = []
@@ -418,16 +464,26 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
                 })
 
             if total_devs > 0 and offline_count == total_devs and status != "Red":
-                status = "Red"; weight = 20
-                issues.append({"label": "🚨 SITE COMPLETELY OFFLINE", "time": "Critical", "severity": "critical"})
+                if offline_count == historical_devs:
+                    status = "Grey"; weight = 5
+                    issues.append({"label": "💤 SITE HISTORICALLY OFFLINE", "time": "> 30d", "severity": "historical"})
+                else:
+                    status = "Red"; weight = 20
+                    issues.append({"label": "🚨 SITE COMPLETELY OFFLINE", "time": "Critical", "severity": "critical"})
 
             if not primary_model:
                 primary_model = "Cloud Hosted"
 
             if status != "Red":
-                if offline_count > 0:
-                    status = "Yellow"; weight = 10
-                    issues.append({"label": f"⚠️ {offline_count} Device(s) Offline", "time": "Partial", "severity": "warning"})
+                if recent_devs > 0:
+                    if weight < 10: 
+                        status = "Yellow"; weight = 10
+                    issues.append({"label": f"⚠️ {recent_devs} Device(s) Offline", "time": "Partial", "severity": "warning"})
+                    
+                if historical_devs > 0 and not any(i['severity'] == 'historical' for i in issues):
+                    if weight < 5: 
+                        status = "Grey"; weight = 5
+                    issues.append({"label": f"💤 {historical_devs} Device(s) Historically Down", "time": "> 30d", "severity": "historical"})
 
             cards.append({
                 "SiteName": f"{site_desc} (Cloud)",
