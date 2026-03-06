@@ -25,10 +25,15 @@
             border-radius: 12px; 
             background: var(--card-bg); 
             border-left: 10px solid; 
-            transition: transform 0.2s; 
+            transition: transform 0.2s, background-color 0.2s; 
             display: flex;
             flex-direction: column;
             box-sizing: border-box;
+            cursor: pointer; /* Makes the whole card feel clickable */
+        }
+        
+        .card:hover {
+            background: #1e1e1e; /* Slight hover effect */
         }
         
         .Red { border-color: var(--crit); }
@@ -83,6 +88,7 @@
             max-height: 180px; 
             overflow-y: auto;  
             padding-right: 5px;
+            cursor: default; /* Revert cursor for the inner list */
         }
         .inv-list::-webkit-scrollbar { width: 6px; }
         .inv-list::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); border-radius: 4px; }
@@ -128,6 +134,19 @@
             } catch (e) { console.error("Dashboard Update Error:", e); }
         }
 
+        // Handle clicking anywhere on the card
+        function toggleCard(event, cardElement) {
+            // Ignore the click if the user is interacting with the scrollable inventory list inside
+            if (event.target.closest('.inv-list')) return;
+            // The browser already handles clicks directly on the <summary> element
+            if (event.target.tagName === 'SUMMARY') return;
+
+            const details = cardElement.querySelector('details');
+            if (details) {
+                details.open = !details.open;
+            }
+        }
+
         function renderGrid() {
             const hideHealthy = document.getElementById('hide-healthy').checked;
             
@@ -139,7 +158,7 @@
             document.getElementById('grid').innerHTML = currentData.map(site => {
                 const isHidden = hideHealthy && site.Status === 'Green' ? 'hidden' : '';
                 return `
-                <div class="card ${site.Status} ${isHidden}">
+                <div class="card ${site.Status} ${isHidden}" onclick="toggleCard(event, this)">
                     <div class="site-name" title="${site.SiteName}">${site.SiteName}</div>
                     <div class="site-meta" title="${site.Model} ${site.ISP ? `- ${site.ISP}` : ''}">
                         ${site.Model} ${site.ISP ? `&nbsp;&nbsp;•&nbsp;&nbsp;<span class="isp-badge">📡 ${site.ISP}</span>` : ''}
