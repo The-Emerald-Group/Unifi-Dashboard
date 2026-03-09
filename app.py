@@ -24,7 +24,6 @@ CLASSIC_PASS = os.environ.get("CLASSIC_PASS")
 
 # --- EXCLUSIONS ---
 IGNORE_SITES_RAW = os.environ.get("IGNORE_SITES", "")
-# Create a clean, lowercase list of sites to ignore
 IGNORE_SITES = [s.strip().lower() for s in IGNORE_SITES_RAW.split(",") if s.strip()]
 
 # --- SMTP EMAIL CONFIGURATION ---
@@ -40,16 +39,14 @@ ALERT_THRESHOLD_SECONDS = 8 * 3600  # 8 Hours
 DATA_FILE = "data.json"
 TEMP_DATA_FILE = "data.tmp.json" 
 
-# --- PERMANENT DOCKER VOLUME STORAGE (For alerts only) ---
 DATA_DIR = "/unifi_data"
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE = f"{DATA_DIR}/alerts_v2.json" 
 TEMP_STATE_FILE = f"{DATA_DIR}/alerts_v2.tmp.json"
-# ---------------------------------------------------------
 
 POLL_INTERVAL = 300 
-ALERT_WINDOW_MINS = 240 
 HISTORICAL_OFFLINE_SECONDS = 2592000  # 30 Days
+GRACE_PERIOD_SECONDS = 180            # 3 Minutes
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -58,115 +55,36 @@ def send_consolidated_offline_alert(site_name, devices):
     count = len(devices)
     s_plural = "s" if count > 1 else ""
     is_are = "are" if count > 1 else "is"
-    
     subject = f"🚨 URGENT: {count} UniFi Device{s_plural} Offline - {site_name}"
     
     table_rows = ""
     for d in devices:
-        table_rows += f"""
-        <tr>
-          <td style="padding: 10px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #222;">{d['name']}</td>
-          <td style="padding: 10px 15px; border-bottom: 1px solid #eaeaea; color: #666;">{d['model']}</td>
-          <td style="padding: 10px 15px; border-bottom: 1px solid #eaeaea; color: #ff3b30; font-weight: bold;">{d['duration']}</td>
-        </tr>
-        """
+        table_rows += f"""<tr><td style="padding:10px 15px;border-bottom:1px solid #eaeaea;font-weight:bold;color:#222;">{d['name']}</td><td style="padding:10px 15px;border-bottom:1px solid #eaeaea;color:#666;">{d['model']}</td><td style="padding:10px 15px;border-bottom:1px solid #eaeaea;color:#ff3b30;font-weight:bold;">{d['duration']}</td></tr>"""
     
-    html_body = f"""
-    <html>
-      <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f5f7; margin: 0; padding: 30px 10px;">
-        <div style="max-width: 650px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
-          <div style="background-color: #ff3b30; color: #ffffff; padding: 20px; text-align: center;">
-            <h2 style="margin: 0; font-size: 22px; letter-spacing: 1px;">🚨 DEVICE{s_plural.upper()} OFFLINE ALERT</h2>
-          </div>
-          <div style="padding: 30px;">
-            <p style="font-size: 16px; color: #444; line-height: 1.5; margin-top: 0;">
-              An automated alert has been triggered by the Emerald IT UniFi Monitor. <b>{count} network device{s_plural}</b> at <strong>{site_name}</strong> {is_are} unreachable for over 8 hours.
-            </p>
-            <table style="width: 100%; border-collapse: collapse; margin-top: 20px; margin-bottom: 25px; background-color: #f9f9f9; border-radius: 6px; overflow: hidden; text-align: left;">
-              <tr style="background-color: #eaeaea;">
-                <th style="padding: 12px 15px; color: #444; font-size: 14px;">Device Name</th>
-                <th style="padding: 12px 15px; color: #444; font-size: 14px;">Hardware Model</th>
-                <th style="padding: 12px 15px; color: #444; font-size: 14px;">Time Offline</th>
-              </tr>
-              {table_rows}
-            </table>
-            <h3 style="color: #222; font-size: 16px; margin-bottom: 10px; border-bottom: 2px solid #00A1E4; display: inline-block; padding-bottom: 5px;">Recommended Troubleshooting</h3>
-            <ul style="color: #555; line-height: 1.6; padding-left: 20px; font-size: 14px;">
-              <li style="margin-bottom: 6px;"><b>Power Check:</b> Verify the device is receiving power.</li>
-              <li style="margin-bottom: 6px;"><b>Cabling:</b> Ensure the uplink Ethernet cable is securely connected.</li>
-              <li style="margin-bottom: 6px;"><b>Upstream Equipment:</b> Check if the switch port this device connects to is active.</li>
-              <li style="margin-bottom: 6px;"><b>Hard Reboot:</b> Try physically unplugging the device and plugging it back in.</li>
-              <li style="margin-bottom: 6px;"><b>ISP Check:</b> Verify that the ISP modem is online.</li>
-            </ul>
-          </div>
-          <div style="background-color: #f1f1f1; padding: 15px; text-align: center; color: #888; font-size: 12px; border-top: 1px solid #eaeaea;">
-            <strong>Emerald IT</strong> • Automated Network Monitoring System
-          </div>
-        </div>
-      </body>
-    </html>
-    """
+    html_body = f"""<html><body style="font-family:'Segoe UI',sans-serif;background-color:#f4f5f7;margin:0;padding:30px 10px;"><div style="max-width:650px;margin:0 auto;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 4px 15px rgba(0,0,0,0.05);"><div style="background-color:#ff3b30;color:#ffffff;padding:20px;text-align:center;"><h2 style="margin:0;font-size:22px;letter-spacing:1px;">🚨 DEVICE{s_plural.upper()} OFFLINE ALERT</h2></div><div style="padding:30px;"><p style="font-size:16px;color:#444;line-height:1.5;margin-top:0;">An automated alert has been triggered by the Emerald IT UniFi Monitor. <b>{count} network device{s_plural}</b> at <strong>{site_name}</strong> {is_are} unreachable for over 8 hours.</p><table style="width:100%;border-collapse:collapse;margin-top:20px;margin-bottom:25px;background-color:#f9f9f9;border-radius:6px;overflow:hidden;text-align:left;"><tr style="background-color:#eaeaea;"><th style="padding:12px 15px;color:#444;font-size:14px;">Device Name</th><th style="padding:12px 15px;color:#444;font-size:14px;">Hardware Model</th><th style="padding:12px 15px;color:#444;font-size:14px;">Time Offline</th></tr>{table_rows}</table></div><div style="background-color:#f1f1f1;padding:15px;text-align:center;color:#888;font-size:12px;border-top:1px solid #eaeaea;"><strong>Emerald IT</strong> • Automated Network Monitoring System</div></div></body></html>"""
     return send_email(subject, html_body, site_name)
 
 def send_consolidated_recovery_alert(site_name, devices):
     count = len(devices)
     s_plural = "s" if count > 1 else ""
     subject = f"✅ RECOVERED: {count} UniFi Device{s_plural} Online - {site_name}"
-    
     table_rows = ""
     for d in devices:
-        table_rows += f"""
-        <tr>
-          <td style="padding: 10px 15px; border-bottom: 1px solid #eaeaea; font-weight: bold; color: #222;">{d['name']}</td>
-          <td style="padding: 10px 15px; border-bottom: 1px solid #eaeaea; color: #666;">{d['model']}</td>
-          <td style="padding: 10px 15px; border-bottom: 1px solid #eaeaea; color: #4cd964; font-weight: bold;">ONLINE</td>
-        </tr>
-        """
-
-    html_body = f"""
-    <html>
-      <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f5f7; margin: 0; padding: 30px 10px;">
-        <div style="max-width: 650px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
-          <div style="background-color: #4cd964; color: #ffffff; padding: 20px; text-align: center;">
-            <h2 style="margin: 0; font-size: 22px; letter-spacing: 1px;">✅ DEVICE{s_plural.upper()} RECOVERED</h2>
-          </div>
-          <div style="padding: 30px;">
-            <p style="font-size: 16px; color: #444; line-height: 1.5; margin-top: 0;">
-              Good news! <b>{count} network device{s_plural}</b> at <strong>{site_name}</strong> that previously triggered an alert have reconnected to the controller and are functioning normally.
-            </p>
-            <table style="width: 100%; border-collapse: collapse; margin-top: 20px; margin-bottom: 25px; background-color: #f9f9f9; border-radius: 6px; overflow: hidden; text-align: left;">
-              <tr style="background-color: #eaeaea;">
-                <th style="padding: 12px 15px; color: #444; font-size: 14px;">Device Name</th>
-                <th style="padding: 12px 15px; color: #444; font-size: 14px;">Hardware Model</th>
-                <th style="padding: 12px 15px; color: #444; font-size: 14px;">Current Status</th>
-              </tr>
-              {table_rows}
-            </table>
-          </div>
-          <div style="background-color: #f1f1f1; padding: 15px; text-align: center; color: #888; font-size: 12px; border-top: 1px solid #eaeaea;">
-            <strong>Emerald IT</strong> • Automated Network Monitoring System
-          </div>
-        </div>
-      </body>
-    </html>
-    """
+        table_rows += f"""<tr><td style="padding:10px 15px;border-bottom:1px solid #eaeaea;font-weight:bold;color:#222;">{d['name']}</td><td style="padding:10px 15px;border-bottom:1px solid #eaeaea;color:#666;">{d['model']}</td><td style="padding:10px 15px;border-bottom:1px solid #eaeaea;color:#4cd964;font-weight:bold;">ONLINE</td></tr>"""
+    html_body = f"""<html><body style="font-family:'Segoe UI',sans-serif;background-color:#f4f5f7;margin:0;padding:30px 10px;"><div style="max-width:650px;margin:0 auto;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 4px 15px rgba(0,0,0,0.05);"><div style="background-color:#4cd964;color:#ffffff;padding:20px;text-align:center;"><h2 style="margin:0;font-size:22px;letter-spacing:1px;">✅ DEVICE{s_plural.upper()} RECOVERED</h2></div><div style="padding:30px;"><p style="font-size:16px;color:#444;line-height:1.5;margin-top:0;">Good news! <b>{count} network device{s_plural}</b> at <strong>{site_name}</strong> that previously triggered an alert have reconnected to the controller and are functioning normally.</p><table style="width:100%;border-collapse:collapse;margin-top:20px;margin-bottom:25px;background-color:#f9f9f9;border-radius:6px;overflow:hidden;text-align:left;"><tr style="background-color:#eaeaea;"><th style="padding:12px 15px;color:#444;font-size:14px;">Device Name</th><th style="padding:12px 15px;color:#444;font-size:14px;">Hardware Model</th><th style="padding:12px 15px;color:#444;font-size:14px;">Current Status</th></tr>{table_rows}</table></div><div style="background-color:#f1f1f1;padding:15px;text-align:center;color:#888;font-size:12px;border-top:1px solid #eaeaea;"><strong>Emerald IT</strong> • Automated Network Monitoring System</div></div></body></html>"""
     return send_email(subject, html_body, site_name)
 
 def send_email(subject, html_body, log_identifier):
-    if not SMTP_SERVER or not EMAIL_TO:
-        return False
-        
+    if not SMTP_SERVER or not EMAIL_TO: return False
     msg = MIMEMultipart('alternative')
     msg['From'] = EMAIL_FROM
     msg['To'] = EMAIL_TO
     msg['Subject'] = subject
     msg.attach(MIMEText(html_body, 'html'))
-
     for attempt in range(1, 4):
         try:
             server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
-            if SMTP_USER and SMTP_PASS:
-                server.login(SMTP_USER, SMTP_PASS)
+            if SMTP_USER and SMTP_PASS: server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)
             log(f"*** EMAIL SENT for {log_identifier}: {subject} ***")
             try: server.quit() 
@@ -196,11 +114,9 @@ def parse_iso_time(ts_str):
         if not ts_str: return None
         clean_ts = ts_str.replace("Z", "+00:00")
         dt = datetime.fromisoformat(clean_ts)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+        if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
         return dt
-    except Exception:
-        return None
+    except Exception: return None
 
 def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
     if not API_KEY: return []
@@ -213,7 +129,6 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
         
         site_health_map = {s.get('hostId'): s for s in sites_res if s.get('hostId')}
         host_map = {h.get('id'): h for h in hosts_res if h.get('id')}
-
         current_time = datetime.now(timezone.utc)
         current_bucket = int(current_time.timestamp() / 300)
 
@@ -221,8 +136,7 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             host_id = host_group.get('hostId')
             name = host_group.get('hostName') or "Unnamed Site"
             
-            if name.lower() in IGNORE_SITES:
-                continue
+            if name.lower() in IGNORE_SITES: continue
                 
             devices_list = host_group.get('devices', [])
             stats = site_health_map.get(host_id, {}).get('statistics', {})
@@ -234,11 +148,13 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             issues = []
             inventory = []
             primary_model = None 
-            gw_uptime = None   # Tracks uptime to detect reboots vs ISP issues
-            offline_devs = 0
+            gw_reconnect_sec = 9999999 # Tracks exactly when the Gateway's cloud connection last dropped
+            
+            total_devs = len(devices_list)
+            offline_devs = 0           
+            alertable_offline_devs = 0 
             historical_devs = 0
             recent_devs = 0
-            total_devs = len(devices_list)
 
             for d in devices_list:
                 dev_status = str(d.get('status', 'unknown')).lower()
@@ -247,29 +163,50 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                 dev_name = d.get("name") or dev_mac or "Unknown Device"
                 dev_model = d.get("model") or "UniFi Device"
                 alert_key = dev_mac or f"{name}_{dev_name}"
+                
                 offline_str = ""
                 is_historical = False
+                is_flapping = False 
 
-                if d.get('isConsole'):
+                dev_type = d.get('type', '').lower()
+                is_gw = d.get('isConsole') or dev_type in ['ugw', 'uxg', 'gateway']
+
+                if is_gw:
                     primary_model = dev_model
-                    # Capture the uptime to verify graceful reboots
-                    if d.get('uptime') is not None:
-                        try:
-                            gw_uptime = int(d.get('uptime'))
-                        except:
-                            pass
+                    # Capture exact time the cloud tunnel last connected (This perfectly flags updates/reboots)
+                    conn_ts = d.get('lastConnectionStateChange') or host_info.get('lastConnectionStateChange')
+                    if conn_ts:
+                        parsed_ts = parse_iso_time(conn_ts)
+                        if parsed_ts:
+                            gw_reconnect_sec = (current_time - parsed_ts).total_seconds()
 
                 if dev_status != "online":
+                    
+                    # Intercept Transitional States (Firmware updates, adopting) so they don't flash red
+                    if dev_status in ['getting_ready', 'updating', 'provisioning', 'adopting']:
+                        inventory.append({
+                            "name": dev_name,
+                            "model": dev_model,
+                            "status": dev_status.upper(),
+                            "has_update": has_update,
+                            "offline_duration": ""
+                        })
+                        continue # Skip offline alert logic entirely
+
                     offline_devs += 1
                     dt_str = d.get('lastSeenAt') or d.get('lastConnectionStateChange')
-                    if not dt_str and d.get('isConsole'):
-                        dt_str = host_info.get('lastConnectionStateChange')
+                    if not dt_str and d.get('isConsole'): dt_str = host_info.get('lastConnectionStateChange')
                         
                     last_seen_dt = parse_iso_time(dt_str)
                     if last_seen_dt:
                         try:
                             diff_sec = (current_time - last_seen_dt).total_seconds()
                             offline_str = format_duration(diff_sec)
+                            
+                            # Apply Grace Period
+                            if diff_sec < GRACE_PERIOD_SECONDS:
+                                is_flapping = True
+                                
                             if diff_sec >= HISTORICAL_OFFLINE_SECONDS:
                                 is_historical = True
                             
@@ -279,20 +216,16 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                         except Exception: 
                             offline_str = ">30d"
                             is_historical = True
-                            if alert_key not in alert_state:
-                                if name not in pending_offline: pending_offline[name] = []
-                                pending_offline[name].append({"name": dev_name, "model": dev_model, "duration": "> 30 days", "mac": alert_key})
                     else:
                         offline_str = ">30d"
                         is_historical = True
-                        if alert_key not in alert_state:
-                            if name not in pending_offline: pending_offline[name] = []
-                            pending_offline[name].append({"name": dev_name, "model": dev_model, "duration": "> 30 days", "mac": alert_key})
                             
-                    if is_historical:
-                        historical_devs += 1
-                    else:
-                        recent_devs += 1
+                    if not is_flapping:
+                        alertable_offline_devs += 1
+                        if is_historical:
+                            historical_devs += 1
+                        else:
+                            recent_devs += 1
                         
                 else:
                     if alert_key in alert_state:
@@ -307,7 +240,7 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                     "offline_duration": offline_str
                 })
 
-                if d.get('isConsole') and dev_status != "online":
+                if is_gw and dev_status != "online" and not is_flapping:
                     if is_historical:
                         if weight < 8: status = "Grey"; weight = 8
                         issues.append({"label": "💤 GATEWAY HISTORICALLY DOWN", "time": "> 30d", "severity": "historical"})
@@ -316,9 +249,9 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                         time_display = f"{offline_str} ago" if offline_str else "Critical"
                         issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
 
-            if total_devs > 0 and offline_devs == total_devs:
+            if total_devs > 0 and alertable_offline_devs == total_devs:
                 issues = [i for i in issues if "GATEWAY" not in i['label']]
-                if offline_devs == historical_devs:
+                if alertable_offline_devs == historical_devs:
                     if weight < 8: status = "Grey"; weight = 8
                     issues.append({"label": "💤 SITE HISTORICALLY OFFLINE", "time": "> 30d", "severity": "historical"})
                 else:
@@ -330,20 +263,22 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             elif not primary_model:
                 primary_model = "Gateway"
 
-            # --- SMART ISP LOGIC ---
+            # --- BULLETPROOF ISP & REBOOT LOGIC ---
             internet_issues = stats.get('internetIssues', [])
             recent_isp_buckets = 0
-            isp_lookback_buckets = int(120 / 5) # 2 hours
+            isp_lookback_sec = 120 * 60 # 2 hours
+            isp_lookback_buckets = int(isp_lookback_sec / 300) 
             
             for iss in internet_issues:
                 if (current_bucket - iss.get('index', 0)) <= isp_lookback_buckets:
                     recent_isp_buckets += 1
 
             if recent_isp_buckets >= 2:
-                # Intercept the ISP alert if the gateway rebooted during this window
-                if gw_uptime is not None and gw_uptime < (isp_lookback_buckets * 5 * 60):
+                # If the gateway's cloud connection dropped within the exact same window, it was definitively an update/reboot.
+                # Added an 1800 second (30m) padding buffer to catch slow firmware updates
+                if gw_reconnect_sec < (isp_lookback_sec + 1800):
                     if weight < 5: status = "Green"; weight = 5
-                    issues.append({"label": "🔄 RECENT GATEWAY REBOOT", "time": "< 2h ago", "severity": "historical"})
+                    issues.append({"label": "🔄 RECENT GATEWAY REBOOT / UPDATE", "time": "< 2h ago", "severity": "historical"})
                 else:
                     if weight < 15: status = "Yellow"; weight = 15
                     issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 2h ago", "severity": "warning"})
@@ -374,9 +309,7 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
 
 
 def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
-    if not CLASSIC_URL or not CLASSIC_USER or not CLASSIC_PASS: 
-        return []
-        
+    if not CLASSIC_URL or not CLASSIC_USER or not CLASSIC_PASS: return []
     cards = []
     current_time = datetime.now(timezone.utc)
     
@@ -392,8 +325,7 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
             site_desc = site.get('desc', 'Unnamed Site')
             display_name = f"{site_desc} (Cloud)"
             
-            if site_desc.lower() in IGNORE_SITES or display_name.lower() in IGNORE_SITES:
-                continue
+            if site_desc.lower() in IGNORE_SITES or display_name.lower() in IGNORE_SITES: continue
             
             dev_res = session.get(f"{CLASSIC_URL}/api/s/{site_name}/stat/device", verify=False, timeout=15).json().get('data', [])
             if not dev_res: continue
@@ -402,32 +334,54 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
             weight = 0
             issues = []
             inventory = []
-            offline_count = 0
+            primary_model = None
+            
+            total_devs = len(dev_res)
+            offline_devs = 0
+            alertable_offline_devs = 0
             historical_devs = 0
             recent_devs = 0
-            primary_model = None
-            total_devs = len(dev_res)
 
             for dev in dev_res:
                 dev_mac = dev.get("mac")
                 d_name = dev.get("name") or dev_mac or "Unknown Device"
                 d_model = dev.get("model", "UniFi Device")
                 alert_key = dev_mac or f"{site_desc}_{d_name}"
-                is_offline = (dev.get("state", 0) == 0)
+                
+                # In classic API, 0=Disconnected, 1=Connected, others=Adopting/Provisioning
+                dev_state = dev.get("state", 0)
+                is_offline = (dev_state == 0)
+                is_transitional = (dev_state not in [0, 1])
+                
                 offline_str = ""
                 is_historical = False
+                is_flapping = False
 
                 if dev.get('type') == 'ugw':
                     primary_model = d_model
 
+                if is_transitional:
+                    inventory.append({
+                        "name": d_name,
+                        "model": d_model,
+                        "status": "UPDATING",
+                        "has_update": False,
+                        "offline_duration": ""
+                    })
+                    continue
+
                 if is_offline:
-                    offline_count += 1
+                    offline_devs += 1
                     last_seen = dev.get('last_seen') or dev.get('last_disconnect')
                     
                     if last_seen:
                         try:
                             diff_sec = (current_time - datetime.fromtimestamp(float(last_seen), timezone.utc)).total_seconds()
                             offline_str = format_duration(diff_sec)
+                            
+                            if diff_sec < GRACE_PERIOD_SECONDS:
+                                is_flapping = True
+                                
                             if diff_sec >= HISTORICAL_OFFLINE_SECONDS:
                                 is_historical = True
                                 
@@ -437,22 +391,18 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
                         except Exception:
                             offline_str = ">30d"
                             is_historical = True
-                            if alert_key not in alert_state:
-                                if site_desc not in pending_offline: pending_offline[site_desc] = []
-                                pending_offline[site_desc].append({"name": d_name, "model": d_model, "duration": "> 30 days", "mac": alert_key})
                     else:
                         offline_str = ">30d"
                         is_historical = True
-                        if alert_key not in alert_state:
-                            if site_desc not in pending_offline: pending_offline[site_desc] = []
-                            pending_offline[site_desc].append({"name": d_name, "model": d_model, "duration": "> 30 days", "mac": alert_key})
 
-                    if is_historical:
-                        historical_devs += 1
-                    else:
-                        recent_devs += 1
+                    if not is_flapping:
+                        alertable_offline_devs += 1
+                        if is_historical:
+                            historical_devs += 1
+                        else:
+                            recent_devs += 1
 
-                    if dev.get('type') == 'ugw':
+                    if dev.get('type') == 'ugw' and not is_flapping:
                         if is_historical:
                             if weight < 8: status = "Grey"; weight = 8
                             issues.append({"label": "💤 GATEWAY HISTORICALLY DOWN", "time": "> 30d", "severity": "historical"})
@@ -473,9 +423,9 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
                     "offline_duration": offline_str
                 })
 
-            if total_devs > 0 and offline_count == total_devs:
+            if total_devs > 0 and alertable_offline_devs == total_devs:
                 issues = [i for i in issues if "GATEWAY" not in i['label']]
-                if offline_count == historical_devs:
+                if alertable_offline_devs == historical_devs:
                     if weight < 8: status = "Grey"; weight = 8
                     issues.append({"label": "💤 SITE HISTORICALLY OFFLINE", "time": "> 30d", "severity": "historical"})
                 else:
@@ -510,7 +460,6 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
         log(f"!! Error fetching Classic API: {str(e)}")
 
     return cards
-
 
 def harvest_data():
     alert_state = {}
