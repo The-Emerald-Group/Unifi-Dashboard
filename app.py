@@ -226,7 +226,6 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                 
             devices_list = host_group.get('devices', [])
             stats = site_health_map.get(host_id, {}).get('statistics', {})
-            counts = stats.get('counts', {})
             isp_name = stats.get('ispInfo', {}).get('name', '')
             host_info = host_map.get(host_id, {})
             
@@ -325,15 +324,20 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             elif not primary_model:
                 primary_model = "Gateway"
 
+            # --- UPDATED ISP ISSUE LOGIC ---
+            # Lookback is now 2 hours (24 buckets) instead of 4 hours
+            # Requires at least 2 buckets (10 mins) of outage to trigger, ignoring 5-min firmware reboots
             internet_issues = stats.get('internetIssues', [])
-            active_isp = False
+            recent_isp_buckets = 0
+            isp_lookback_buckets = int(120 / 5) 
+            
             for iss in internet_issues:
-                if (current_bucket - iss.get('index', 0)) <= (ALERT_WINDOW_MINS / 5):
-                    active_isp = True; break
+                if (current_bucket - iss.get('index', 0)) <= isp_lookback_buckets:
+                    recent_isp_buckets += 1
 
-            if active_isp:
+            if recent_isp_buckets >= 2:
                 if weight < 15: status = "Yellow"; weight = 15
-                issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 4h ago", "severity": "warning"})
+                issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 2h ago", "severity": "warning"})
                 
             if recent_devs > 0 and not any("SITE COMPLETELY OFFLINE" in i['label'] for i in issues):
                 if weight < 10: status = "Yellow"; weight = 10
