@@ -46,7 +46,10 @@ TEMP_STATE_FILE = f"{DATA_DIR}/alerts_v2.tmp.json"
 
 POLL_INTERVAL = 300 
 HISTORICAL_OFFLINE_SECONDS = 2592000  # 30 Days
-GRACE_PERIOD_SECONDS = 180            # 3 Minutes
+
+# FAST GRACE PERIOD: 3 Minutes. 
+# Fast enough to catch real outages, but ignores 60-second cloud stutters.
+GRACE_PERIOD_SECONDS = 180            
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -148,7 +151,7 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             issues = []
             inventory = []
             primary_model = None 
-            gw_reconnect_sec = 9999999 # Tracks exactly when the Gateway's cloud connection last dropped
+            gw_reconnect_sec = 9999999 
             
             total_devs = len(devices_list)
             offline_devs = 0           
@@ -173,7 +176,7 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
 
                 if is_gw:
                     primary_model = dev_model
-                    # Capture exact time the cloud tunnel last connected (This perfectly flags updates/reboots)
+                    # Capture exact time the cloud tunnel last connected (flags updates/reboots)
                     conn_ts = d.get('lastConnectionStateChange') or host_info.get('lastConnectionStateChange')
                     if conn_ts:
                         parsed_ts = parse_iso_time(conn_ts)
@@ -182,7 +185,7 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
 
                 if dev_status != "online":
                     
-                    # Intercept Transitional States (Firmware updates, adopting) so they don't flash red
+                    # Intercept Transitional States (Updates, adopting) so they don't flash red
                     if dev_status in ['getting_ready', 'updating', 'provisioning', 'adopting']:
                         inventory.append({
                             "name": dev_name,
@@ -191,7 +194,7 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                             "has_update": has_update,
                             "offline_duration": ""
                         })
-                        continue # Skip offline alert logic entirely
+                        continue
 
                     offline_devs += 1
                     dt_str = d.get('lastSeenAt') or d.get('lastConnectionStateChange')
@@ -203,7 +206,7 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                             diff_sec = (current_time - last_seen_dt).total_seconds()
                             offline_str = format_duration(diff_sec)
                             
-                            # Apply Grace Period
+                            # Apply the Fast 3-Minute Grace Period
                             if diff_sec < GRACE_PERIOD_SECONDS:
                                 is_flapping = True
                                 
@@ -263,7 +266,7 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             elif not primary_model:
                 primary_model = "Gateway"
 
-            # --- BULLETPROOF ISP & REBOOT LOGIC ---
+            # --- FAST ISP ALERTS + SMART INTERCEPT LOGIC ---
             internet_issues = stats.get('internetIssues', [])
             recent_isp_buckets = 0
             isp_lookback_sec = 120 * 60 # 2 hours
@@ -273,9 +276,10 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                 if (current_bucket - iss.get('index', 0)) <= isp_lookback_buckets:
                     recent_isp_buckets += 1
 
+            # Requires just 2 buckets (10 mins) of dropouts to trigger a Fast ISP Alert
             if recent_isp_buckets >= 2:
-                # If the gateway's cloud connection dropped within the exact same window, it was definitively an update/reboot.
-                # Added an 1800 second (30m) padding buffer to catch slow firmware updates
+                # INTERCEPT: If the gateway's cloud connection dropped within the exact same window, 
+                # it was definitively a software update or reboot. Mute the ISP warning.
                 if gw_reconnect_sec < (isp_lookback_sec + 1800):
                     if weight < 5: status = "Green"; weight = 5
                     issues.append({"label": "🔄 RECENT GATEWAY REBOOT / UPDATE", "time": "< 2h ago", "severity": "historical"})
@@ -306,7 +310,6 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
         log(f"!! Error fetching Modern API: {str(e)}")
     
     return cards
-
 
 def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
     if not CLASSIC_URL or not CLASSIC_USER or not CLASSIC_PASS: return []
@@ -379,6 +382,7 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
                             diff_sec = (current_time - datetime.fromtimestamp(float(last_seen), timezone.utc)).total_seconds()
                             offline_str = format_duration(diff_sec)
                             
+                            # Fast Grace Period
                             if diff_sec < GRACE_PERIOD_SECONDS:
                                 is_flapping = True
                                 
