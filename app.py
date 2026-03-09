@@ -49,8 +49,8 @@ POLL_INTERVAL = 300
 HISTORICAL_OFFLINE_SECONDS = 2592000  # 30 Days
 
 # --- SPLIT GRACE PERIODS ---
-# 10 Minutes: Swallows annoying UniFi Cloud tunnel crashes and gateway reboots.
-GW_GRACE_PERIOD_SECONDS = 600            
+# 6 Minutes: Perfectly swallows exactly 5-minute UniFi Cloud tunnel crashes and ghost offline blocks.
+GW_GRACE_PERIOD_SECONDS = 360            
 # 3 Minutes: Lightning-fast alerts if a PoE Switch or Access Point dies.
 DEVICE_GRACE_PERIOD_SECONDS = 180        
 
@@ -154,7 +154,6 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             issues = []
             inventory = []
             primary_model = None 
-            gw_reconnect_sec = 9999999 
             
             total_devs = len(devices_list)
             offline_devs = 0           
@@ -179,14 +178,10 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
 
                 if is_gw:
                     primary_model = dev_model
-                    conn_ts = d.get('lastConnectionStateChange') or host_info.get('lastConnectionStateChange')
-                    if conn_ts:
-                        parsed_ts = parse_iso_time(conn_ts)
-                        if parsed_ts:
-                            gw_reconnect_sec = (current_time - parsed_ts).total_seconds()
 
                 if dev_status != "online":
                     
+                    # Intercept Transitional States (Updates, adopting) so they don't flash red
                     if dev_status in ['getting_ready', 'updating', 'provisioning', 'adopting']:
                         inventory.append({
                             "name": dev_name,
@@ -207,7 +202,8 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                             diff_sec = (current_time - last_seen_dt).total_seconds()
                             offline_str = format_duration(diff_sec)
                             
-                            # Apply the appropriate Grace Period based on device type
+                            # APPLY THE SPLIT GRACE PERIOD
+                            # If it's a Gateway, use the 6-min rule (ignores 5-min blocks). Else use 3-min.
                             grace_time = GW_GRACE_PERIOD_SECONDS if is_gw else DEVICE_GRACE_PERIOD_SECONDS
                             if diff_sec < grace_time:
                                 is_flapping = True
@@ -268,22 +264,19 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             elif not primary_model:
                 primary_model = "Gateway"
 
+            # --- EXACT 5-MINUTE ISP BLOCK FILTER ---
+            # If the ISP issue is exactly 1 block (5 mins), it is ignored. Must be >= 2 blocks.
             internet_issues = stats.get('internetIssues', [])
             recent_isp_buckets = 0
-            isp_lookback_sec = 120 * 60 # 2 hours
-            isp_lookback_buckets = int(isp_lookback_sec / 300) 
+            isp_lookback_buckets = int((120 * 60) / 300) # 2 hours
             
             for iss in internet_issues:
                 if (current_bucket - iss.get('index', 0)) <= isp_lookback_buckets:
                     recent_isp_buckets += 1
 
-            if recent_isp_buckets >= 3:
-                if gw_reconnect_sec < (isp_lookback_sec + 1800):
-                    if weight < 5: status = "Green"; weight = 5
-                    issues.append({"label": "🔄 RECENT GATEWAY REBOOT", "time": "< 2h ago", "severity": "historical"})
-                else:
-                    if weight < 15: status = "Yellow"; weight = 15
-                    issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 2h ago", "severity": "warning"})
+            if recent_isp_buckets >= 2:
+                if weight < 15: status = "Yellow"; weight = 15
+                issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 2h ago", "severity": "warning"})
                 
             if recent_devs > 0 and not any("SITE COMPLETELY OFFLINE" in i['label'] for i in issues):
                 if weight < 10: status = "Yellow"; weight = 10
