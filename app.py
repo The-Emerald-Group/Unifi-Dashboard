@@ -25,6 +25,7 @@ CLASSIC_PASS = os.environ.get("CLASSIC_PASS")
 
 # --- EXCLUSIONS ---
 IGNORE_SITES_RAW = os.environ.get("IGNORE_SITES", "")
+# Create a clean, lowercase list of sites to ignore and strip any accidental whitespace
 IGNORE_SITES = [s.strip().lower() for s in IGNORE_SITES_RAW.split(",") if s.strip()]
 
 # --- SMTP EMAIL CONFIGURATION ---
@@ -199,7 +200,10 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
         for host_group in dev_res:
             host_id = host_group.get('hostId')
             name = host_group.get('hostName') or "Unnamed Site"
-            if name.lower() in IGNORE_SITES: continue
+            
+            # --- FIXED EXCLUSION LOGIC ---
+            if name.lower() in IGNORE_SITES:
+                continue
                 
             devices_list = host_group.get('devices', [])
             stats = site_health_map.get(host_id, {}).get('statistics', {})
@@ -265,7 +269,6 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                 
                 inventory.append({"name": dev_name, "model": dev_model, "status": dev_status.upper(), "offline_duration": offline_str})
 
-            # --- GHOST-FILTERED ISP LOGIC ---
             isp_periods = reported.get('internetIssues5min', {}).get('periods', [])
             if not isp_periods: isp_periods = stats.get('internetIssues', [])
             valid_buckets = 0
@@ -274,7 +277,7 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                 if (current_bucket - iss.get('index', 0)) <= (ALERT_WINDOW_MINS / 5): valid_buckets += 1
             if valid_buckets >= 2:
                 status, weight = "Yellow", max(weight, 15)
-                issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 4h ago", "severity": "warning"})
+                issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 2h ago", "severity": "warning"})
 
             if total_devs > 0 and offline_count == total_devs:
                 issues = [i for i in issues if "GATEWAY" not in i['label']]
@@ -307,7 +310,11 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
         sites_res = session.get(f"{CLASSIC_URL}/api/self/sites", verify=False, timeout=15).json().get('data', [])
         for site in sites_res:
             site_desc = site.get('desc', 'Unnamed Site')
-            if site_desc.lower() in IGNORE_SITES: continue
+            
+            # --- FIXED CLASSIC EXCLUSION LOGIC ---
+            if site_desc.lower() in IGNORE_SITES or f"{site_desc} (cloud)".lower() in IGNORE_SITES:
+                continue
+                
             dev_res = session.get(f"{CLASSIC_URL}/api/s/{site.get('name')}/stat/device", verify=False, timeout=15).json().get('data', [])
             if not dev_res: continue
             status, weight, issues, inventory, recent_devs, hist_devs, off_count = "Green", 0, [], [], 0, 0, 0
