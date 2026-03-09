@@ -2,6 +2,7 @@ import os
 import requests
 import json
 import time
+import sys
 import threading
 import traceback
 import urllib3
@@ -47,9 +48,11 @@ TEMP_STATE_FILE = f"{DATA_DIR}/alerts_v2.tmp.json"
 POLL_INTERVAL = 300 
 HISTORICAL_OFFLINE_SECONDS = 2592000  # 30 Days
 
-# FAST GRACE PERIOD: 3 Minutes. 
-# Fast enough to catch real outages, but ignores 60-second cloud stutters.
-GRACE_PERIOD_SECONDS = 180            
+# --- SPLIT GRACE PERIODS ---
+# 10 Minutes: Swallows annoying UniFi Cloud tunnel crashes and gateway reboots.
+GW_GRACE_PERIOD_SECONDS = 600            
+# 3 Minutes: Lightning-fast alerts if a PoE Switch or Access Point dies.
+DEVICE_GRACE_PERIOD_SECONDS = 180        
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -176,7 +179,6 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
 
                 if is_gw:
                     primary_model = dev_model
-                    # Capture exact time the cloud tunnel last connected (flags updates/reboots)
                     conn_ts = d.get('lastConnectionStateChange') or host_info.get('lastConnectionStateChange')
                     if conn_ts:
                         parsed_ts = parse_iso_time(conn_ts)
@@ -185,7 +187,6 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
 
                 if dev_status != "online":
                     
-                    # Intercept Transitional States (Updates, adopting) so they don't flash red
                     if dev_status in ['getting_ready', 'updating', 'provisioning', 'adopting']:
                         inventory.append({
                             "name": dev_name,
@@ -206,8 +207,9 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                             diff_sec = (current_time - last_seen_dt).total_seconds()
                             offline_str = format_duration(diff_sec)
                             
-                            # Apply the Fast 3-Minute Grace Period
-                            if diff_sec < GRACE_PERIOD_SECONDS:
+                            # Apply the appropriate Grace Period based on device type
+                            grace_time = GW_GRACE_PERIOD_SECONDS if is_gw else DEVICE_GRACE_PERIOD_SECONDS
+                            if diff_sec < grace_time:
                                 is_flapping = True
                                 
                             if diff_sec >= HISTORICAL_OFFLINE_SECONDS:
@@ -266,7 +268,6 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             elif not primary_model:
                 primary_model = "Gateway"
 
-            # --- FAST ISP ALERTS + SMART INTERCEPT LOGIC ---
             internet_issues = stats.get('internetIssues', [])
             recent_isp_buckets = 0
             isp_lookback_sec = 120 * 60 # 2 hours
@@ -276,13 +277,10 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                 if (current_bucket - iss.get('index', 0)) <= isp_lookback_buckets:
                     recent_isp_buckets += 1
 
-            # Requires just 2 buckets (10 mins) of dropouts to trigger a Fast ISP Alert
-            if recent_isp_buckets >= 2:
-                # INTERCEPT: If the gateway's cloud connection dropped within the exact same window, 
-                # it was definitively a software update or reboot. Mute the ISP warning.
+            if recent_isp_buckets >= 3:
                 if gw_reconnect_sec < (isp_lookback_sec + 1800):
                     if weight < 5: status = "Green"; weight = 5
-                    issues.append({"label": "🔄 RECENT GATEWAY REBOOT / UPDATE", "time": "< 2h ago", "severity": "historical"})
+                    issues.append({"label": "🔄 RECENT GATEWAY REBOOT", "time": "< 2h ago", "severity": "historical"})
                 else:
                     if weight < 15: status = "Yellow"; weight = 15
                     issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 2h ago", "severity": "warning"})
@@ -351,7 +349,6 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
                 d_model = dev.get("model", "UniFi Device")
                 alert_key = dev_mac or f"{site_desc}_{d_name}"
                 
-                # In classic API, 0=Disconnected, 1=Connected, others=Adopting/Provisioning
                 dev_state = dev.get("state", 0)
                 is_offline = (dev_state == 0)
                 is_transitional = (dev_state not in [0, 1])
@@ -360,7 +357,9 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
                 is_historical = False
                 is_flapping = False
 
-                if dev.get('type') == 'ugw':
+                is_gw = (dev.get('type') == 'ugw')
+
+                if is_gw:
                     primary_model = d_model
 
                 if is_transitional:
@@ -382,8 +381,9 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
                             diff_sec = (current_time - datetime.fromtimestamp(float(last_seen), timezone.utc)).total_seconds()
                             offline_str = format_duration(diff_sec)
                             
-                            # Fast Grace Period
-                            if diff_sec < GRACE_PERIOD_SECONDS:
+                            # Apply the split Grace Periods
+                            grace_time = GW_GRACE_PERIOD_SECONDS if is_gw else DEVICE_GRACE_PERIOD_SECONDS
+                            if diff_sec < grace_time:
                                 is_flapping = True
                                 
                             if diff_sec >= HISTORICAL_OFFLINE_SECONDS:
@@ -406,7 +406,7 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
                         else:
                             recent_devs += 1
 
-                    if dev.get('type') == 'ugw' and not is_flapping:
+                    if is_gw and not is_flapping:
                         if is_historical:
                             if weight < 8: status = "Grey"; weight = 8
                             issues.append({"label": "💤 GATEWAY HISTORICALLY DOWN", "time": "> 30d", "severity": "historical"})
@@ -514,6 +514,13 @@ def harvest_data():
 
 class MyHandler(SimpleHTTPRequestHandler):
     def log_message(self, format, *args): pass 
+    
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return 
+        super().handle_error(request, client_address)
+
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
         self.send_header('Access-Control-Allow-Origin', '*')
