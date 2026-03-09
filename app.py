@@ -50,8 +50,8 @@ ALERT_WINDOW_MINS = 240
 HISTORICAL_OFFLINE_SECONDS = 2592000  # 30 Days
 
 # --- SURGICAL GRACE PERIODS ---
-GW_GRACE_PERIOD_SECONDS = 600      # 10 Mins: Swallow the 5-min console visual bug
-DEVICE_GRACE_PERIOD_SECONDS = 180  # 3 Mins: Fast trigger for real hardware outages
+GW_GRACE_PERIOD_SECONDS = 600      
+DEVICE_GRACE_PERIOD_SECONDS = 180  
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -156,8 +156,7 @@ def send_consolidated_recovery_alert(site_name, devices):
 
 def send_email(subject, html_body, log_identifier):
     if not SMTP_SERVER or not EMAIL_TO: return False
-    msg = MIMEMultipart('alternative')
-    msg['From'] = EMAIL_FROM; msg['To'] = EMAIL_TO; msg['Subject'] = subject
+    msg = MIMEMultipart('alternative'); msg['From'] = EMAIL_FROM; msg['To'] = EMAIL_TO; msg['Subject'] = subject
     msg.attach(MIMEText(html_body, 'html'))
     for attempt in range(1, 4):
         try:
@@ -207,7 +206,6 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             isp_name = stats.get('ispInfo', {}).get('name', '')
             host_data = host_map.get(host_id, {})
             
-            # --- HEARTBEAT LOGIC FROM RAW API DATA ---
             reported = host_data.get('reportedState', {})
             app_reboot_ts = reported.get('deviceStateLastChanged', 0)
             app_recently_restarted = (current_time.timestamp() - app_reboot_ts) < 600 
@@ -233,7 +231,6 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                         inventory.append({"name": dev_name, "model": dev_model, "status": dev_status.upper(), "offline_duration": ""})
                         continue
 
-                    # If this is the Gateway and the app layer just rebooted, ignore the offline state
                     if is_gw and app_recently_restarted:
                         dev_status = "online"
                     else:
@@ -251,9 +248,11 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                                 else: recent_devs += 1
                                 if is_gw:
                                     if is_hist:
-                                        status, weight = "Grey", 8; issues.append({"label": "💤 GATEWAY HISTORICALLY DOWN", "time": "> 30d", "severity": "historical"})
+                                        status, weight = "Grey", max(weight, 8)
+                                        issues.append({"label": "💤 GATEWAY HISTORICALLY DOWN", "time": "> 30d", "severity": "historical"})
                                     else:
-                                        status, weight = "Red", 20; issues.append({"label": "🚨 GATEWAY OFFLINE", "time": f"{offline_str} ago", "severity": "critical"})
+                                        status, weight = "Red", max(weight, 20)
+                                        issues.append({"label": "🚨 GATEWAY OFFLINE", "time": f"{offline_str} ago", "severity": "critical"})
                                 if diff_sec >= ALERT_THRESHOLD_SECONDS and alert_key not in alert_state:
                                     if name not in pending_offline: pending_offline[name] = []
                                     pending_offline[name].append({"name": dev_name, "model": dev_model, "duration": offline_str, "mac": alert_key})
@@ -269,27 +268,30 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             # --- GHOST-FILTERED ISP LOGIC ---
             isp_periods = reported.get('internetIssues5min', {}).get('periods', [])
             if not isp_periods: isp_periods = stats.get('internetIssues', [])
-            
             valid_buckets = 0
             for iss in isp_periods:
                 if iss.get('not_reported') or iss.get('notReported') or iss.get('high_latency'): continue
                 if (current_bucket - iss.get('index', 0)) <= (ALERT_WINDOW_MINS / 5): valid_buckets += 1
-
             if valid_buckets >= 2:
-                if weight < 15: status, weight = "Yellow", 15; issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 4h ago", "severity": "warning"})
+                status, weight = "Yellow", max(weight, 15)
+                issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 4h ago", "severity": "warning"})
 
             if total_devs > 0 and offline_count == total_devs:
                 issues = [i for i in issues if "GATEWAY" not in i['label']]
                 if offline_count == historical_devs:
-                    if weight < 8: status, weight = "Grey", 8; issues.append({"label": "💤 SITE HISTORICALLY OFFLINE", "time": "> 30d", "severity": "historical"})
+                    status, weight = "Grey", max(weight, 8)
+                    issues.append({"label": "💤 SITE HISTORICALLY OFFLINE", "time": "> 30d", "severity": "historical"})
                 else:
-                    if weight < 20: status, weight = "Red", 20; issues.append({"label": "🚨 SITE COMPLETELY OFFLINE", "time": "Critical", "severity": "critical"})
+                    status, weight = "Red", max(weight, 20)
+                    issues.append({"label": "🚨 SITE COMPLETELY OFFLINE", "time": "Critical", "severity": "critical"})
 
             if recent_devs > 0 and not any("SITE COMPLETELY" in i['label'] for i in issues):
-                if weight < 10: status, weight = "Yellow", 10; issues.append({"label": f"⚠️ {recent_devs} Device(s) Offline", "time": "Partial", "severity": "warning"})
+                status, weight = "Yellow", max(weight, 10)
+                issues.append({"label": f"⚠️ {recent_devs} Device(s) Offline", "time": "Partial", "severity": "warning"})
 
             if historical_devs > 0 and not any("SITE" in i['label'] and "OFFLINE" in i['label'] for i in issues):
-                if weight < 5: issues.append({"label": f"💤 {historical_devs} Device(s) Historically Down", "time": "> 30d", "severity": "historical"})
+                if weight < 5: weight = 5
+                issues.append({"label": f"💤 {historical_devs} Device(s) Historically Down", "time": "> 30d", "severity": "historical"})
 
             cards.append({"SiteName": name, "Model": primary_model or "Gateway", "ISP": isp_name, "Inventory": inventory, "Status": status, "IssuesCount": weight, "IssuesList": issues})
     except Exception as e: log(f"!! Modern API Error: {str(e)}")
@@ -321,7 +323,10 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
                             else: recent_devs += 1
                     else: hist_devs += 1; offline_str = ">30d"
                 inventory.append({"name": dev.get("name") or dev.get("mac"), "model": dev.get("model"), "status": "OFFLINE" if is_off else "ONLINE", "offline_duration": offline_str})
+            
             if recent_devs > 0: status, weight = "Yellow", 10; issues.append({"label": f"⚠️ {recent_devs} Device(s) Offline", "time": "Partial", "severity": "warning"})
+            elif hist_devs > 0: weight = 5; issues.append({"label": f"💤 {hist_devs} Device(s) Historically Down", "time": "> 30d", "severity": "historical"})
+            
             cards.append({"SiteName": f"{site_desc} (Cloud)", "Model": "Classic", "ISP": "", "Inventory": inventory, "Status": status, "IssuesCount": weight, "IssuesList": issues})
         session.post(f"{CLASSIC_URL}/api/logout", verify=False)
     except Exception as e: log(f"!! Classic Error: {str(e)}")
