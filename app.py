@@ -12,13 +12,12 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 
-# Suppress insecure HTTPS warnings for the classic controller
+# Suppress insecure HTTPS warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- CONFIGURATION (PULLED FROM DOCKER COMPOSE) ---
 API_KEY = os.environ.get("UNIFI_API_KEY")
 MODERN_URL = "https://api.ui.com/v1"
-
 CLASSIC_URL = os.environ.get("CLASSIC_URL")
 CLASSIC_USER = os.environ.get("CLASSIC_USER")
 CLASSIC_PASS = os.environ.get("CLASSIC_PASS")
@@ -39,7 +38,6 @@ ALERT_THRESHOLD_SECONDS = 8 * 3600  # 8 Hours
 # --- DATA STORAGE PATHS ---
 DATA_FILE = "data.json"
 TEMP_DATA_FILE = "data.tmp.json" 
-
 DATA_DIR = "/unifi_data"
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE = f"{DATA_DIR}/alerts_v2.json" 
@@ -48,25 +46,22 @@ TEMP_STATE_FILE = f"{DATA_DIR}/alerts_v2.tmp.json"
 POLL_INTERVAL = 300 
 HISTORICAL_OFFLINE_SECONDS = 2592000  # 30 Days
 
-# --- SPLIT GRACE PERIODS ---
-# 6 Minutes: Perfectly swallows exactly 5-minute UniFi Cloud tunnel crashes and ghost offline blocks.
-GW_GRACE_PERIOD_SECONDS = 360            
-# 3 Minutes: Lightning-fast alerts if a PoE Switch or Access Point dies.
-DEVICE_GRACE_PERIOD_SECONDS = 180        
+# --- SURGICAL THRESHOLDS ---
+GW_GRACE_PERIOD_SECONDS = 600      # 10 Mins: Perfectly ignores those 5-min visual bugs.
+DEVICE_GRACE_PERIOD_SECONDS = 180  # 3 Mins: Fast trigger for Switches/APs.
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
+# --- EMAIL LOGIC ---
 def send_consolidated_offline_alert(site_name, devices):
     count = len(devices)
     s_plural = "s" if count > 1 else ""
     is_are = "are" if count > 1 else "is"
     subject = f"🚨 URGENT: {count} UniFi Device{s_plural} Offline - {site_name}"
-    
     table_rows = ""
     for d in devices:
         table_rows += f"""<tr><td style="padding:10px 15px;border-bottom:1px solid #eaeaea;font-weight:bold;color:#222;">{d['name']}</td><td style="padding:10px 15px;border-bottom:1px solid #eaeaea;color:#666;">{d['model']}</td><td style="padding:10px 15px;border-bottom:1px solid #eaeaea;color:#ff3b30;font-weight:bold;">{d['duration']}</td></tr>"""
-    
     html_body = f"""<html><body style="font-family:'Segoe UI',sans-serif;background-color:#f4f5f7;margin:0;padding:30px 10px;"><div style="max-width:650px;margin:0 auto;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 4px 15px rgba(0,0,0,0.05);"><div style="background-color:#ff3b30;color:#ffffff;padding:20px;text-align:center;"><h2 style="margin:0;font-size:22px;letter-spacing:1px;">🚨 DEVICE{s_plural.upper()} OFFLINE ALERT</h2></div><div style="padding:30px;"><p style="font-size:16px;color:#444;line-height:1.5;margin-top:0;">An automated alert has been triggered by the Emerald IT UniFi Monitor. <b>{count} network device{s_plural}</b> at <strong>{site_name}</strong> {is_are} unreachable for over 8 hours.</p><table style="width:100%;border-collapse:collapse;margin-top:20px;margin-bottom:25px;background-color:#f9f9f9;border-radius:6px;overflow:hidden;text-align:left;"><tr style="background-color:#eaeaea;"><th style="padding:12px 15px;color:#444;font-size:14px;">Device Name</th><th style="padding:12px 15px;color:#444;font-size:14px;">Hardware Model</th><th style="padding:12px 15px;color:#444;font-size:14px;">Time Offline</th></tr>{table_rows}</table></div><div style="background-color:#f1f1f1;padding:15px;text-align:center;color:#888;font-size:12px;border-top:1px solid #eaeaea;"><strong>Emerald IT</strong> • Automated Network Monitoring System</div></div></body></html>"""
     return send_email(subject, html_body, site_name)
 
@@ -87,43 +82,34 @@ def send_email(subject, html_body, log_identifier):
     msg['To'] = EMAIL_TO
     msg['Subject'] = subject
     msg.attach(MIMEText(html_body, 'html'))
-    for attempt in range(1, 4):
-        try:
-            server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
-            if SMTP_USER and SMTP_PASS: server.login(SMTP_USER, SMTP_PASS)
-            server.send_message(msg)
-            log(f"*** EMAIL SENT for {log_identifier}: {subject} ***")
-            try: server.quit() 
-            except Exception: pass
-            return True
-        except Exception as e:
-            log(f"!! Email attempt {attempt} failed for {log_identifier}: {str(e)}")
-            time.sleep(5)
-    return False
+    try:
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
+        if SMTP_USER and SMTP_PASS: server.login(SMTP_USER, SMTP_PASS)
+        server.send_message(msg)
+        log(f"*** EMAIL SENT for {log_identifier}: {subject} ***")
+        server.quit()
+        return True
+    except Exception as e:
+        log(f"!! Email failed for {log_identifier}: {str(e)}")
+        return False
 
+# --- UTILS ---
 def format_duration(diff_sec):
     if diff_sec < 0: return ""
-    diff_mins = diff_sec / 60
-    if diff_mins < 60: return f"{int(diff_mins)}m"
-    diff_hours = diff_mins / 60
-    if diff_hours < 24: return f"{int(diff_hours)}h"
-    diff_days = diff_hours / 24
-    if diff_days < 7: return f"{int(diff_days)}d"
-    diff_weeks = diff_days / 7
-    if diff_weeks < 4: return f"{int(diff_weeks)}w"
-    diff_months = diff_days / 30.44
-    if diff_months < 12: return f"{int(diff_months)}mo"
-    return f"{int(diff_months/12)}y"
+    m = diff_sec / 60
+    if m < 60: return f"{int(m)}m"
+    h = m / 60
+    if h < 24: return f"{int(h)}h"
+    return f"{int(h/24)}d"
 
 def parse_iso_time(ts_str):
     try:
         if not ts_str: return None
-        clean_ts = ts_str.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(clean_ts)
-        if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception: return None
+        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except: return None
 
+# --- CORE HARVEST LOGIC ---
 def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
     if not API_KEY: return []
     cards = []
@@ -133,329 +119,120 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
         sites_res = requests.get(f"{MODERN_URL}/sites", headers=headers, timeout=30).json().get('data', [])
         hosts_res = requests.get(f"{MODERN_URL}/hosts", headers=headers, timeout=30).json().get('data', [])
         
-        site_health_map = {s.get('hostId'): s for s in sites_res if s.get('hostId')}
-        host_map = {h.get('id'): h for h in hosts_res if h.get('id')}
         current_time = datetime.now(timezone.utc)
         current_bucket = int(current_time.timestamp() / 300)
+        site_map = {s.get('hostId'): s for s in sites_res}
+        host_map = {h.get('id'): h for h in hosts_res}
 
         for host_group in dev_res:
             host_id = host_group.get('hostId')
             name = host_group.get('hostName') or "Unnamed Site"
-            
             if name.lower() in IGNORE_SITES: continue
                 
             devices_list = host_group.get('devices', [])
-            stats = site_health_map.get(host_id, {}).get('statistics', {})
-            isp_name = stats.get('ispInfo', {}).get('name', '')
-            host_info = host_map.get(host_id, {})
+            site_data = site_map.get(host_id, {})
+            host_data = host_map.get(host_id, {})
             
-            status = "Green"
-            weight = 0
-            issues = []
-            inventory = []
-            primary_model = None 
-            
-            total_devs = len(devices_list)
-            offline_devs = 0           
-            alertable_offline_devs = 0 
-            historical_devs = 0
-            recent_devs = 0
+            # APP HEARTBEAT LOGIC: Uses 'deviceStateLastChanged' Unix timestamp from your JSON
+            reported = host_data.get('reportedState', {})
+            app_heartbeat = reported.get('deviceStateLastChanged', 0)
+            app_was_just_restarted = (current_time.timestamp() - app_heartbeat) < 900 # 15 min window
+
+            status, weight, issues, inventory = "Green", 0, [], []
+            primary_model = None
+            recent_devs, historical_devs = 0, 0
 
             for d in devices_list:
                 dev_status = str(d.get('status', 'unknown')).lower()
-                has_update = d.get('firmwareStatus') == 'updateAvailable'
                 dev_mac = d.get('mac')
-                dev_name = d.get("name") or dev_mac or "Unknown Device"
-                dev_model = d.get("model") or "UniFi Device"
+                dev_name = d.get("name") or dev_mac
+                dev_model = d.get("model") or "UniFi"
                 alert_key = dev_mac or f"{name}_{dev_name}"
-                
-                offline_str = ""
-                is_historical = False
-                is_flapping = False 
-
-                dev_type = d.get('type', '').lower()
-                is_gw = d.get('isConsole') or dev_type in ['ugw', 'uxg', 'gateway']
-
-                if is_gw:
-                    primary_model = dev_model
+                is_gw = d.get('isConsole') or d.get('type', '').lower() in ['ugw', 'uxg', 'gateway']
+                if is_gw: primary_model = dev_model
 
                 if dev_status != "online":
-                    
-                    # Intercept Transitional States (Updates, adopting) so they don't flash red
                     if dev_status in ['getting_ready', 'updating', 'provisioning', 'adopting']:
-                        inventory.append({
-                            "name": dev_name,
-                            "model": dev_model,
-                            "status": dev_status.upper(),
-                            "has_update": has_update,
-                            "offline_duration": ""
-                        })
+                        inventory.append({"name": dev_name, "model": dev_model, "status": dev_status.upper(), "offline_duration": ""})
                         continue
 
-                    offline_devs += 1
-                    dt_str = d.get('lastSeenAt') or d.get('lastConnectionStateChange')
-                    if not dt_str and d.get('isConsole'): dt_str = host_info.get('lastConnectionStateChange')
-                        
-                    last_seen_dt = parse_iso_time(dt_str)
-                    if last_seen_dt:
-                        try:
+                    # If the app layer just came back, the "Offline" status is a visual bug
+                    if is_gw and app_was_just_restarted:
+                        dev_status = "online"
+                    else:
+                        dt_str = d.get('lastSeenAt') or d.get('lastConnectionStateChange')
+                        last_seen_dt = parse_iso_time(dt_str)
+                        if last_seen_dt:
                             diff_sec = (current_time - last_seen_dt).total_seconds()
                             offline_str = format_duration(diff_sec)
+                            grace = GW_GRACE_PERIOD_SECONDS if is_gw else DEVICE_GRACE_PERIOD_SECONDS
                             
-                            # APPLY THE SPLIT GRACE PERIOD
-                            # If it's a Gateway, use the 6-min rule (ignores 5-min blocks). Else use 3-min.
-                            grace_time = GW_GRACE_PERIOD_SECONDS if is_gw else DEVICE_GRACE_PERIOD_SECONDS
-                            if diff_sec < grace_time:
-                                is_flapping = True
+                            if diff_sec > grace:
+                                if diff_sec >= HISTORICAL_OFFLINE_SECONDS: historical_devs += 1
+                                else: recent_devs += 1
                                 
-                            if diff_sec >= HISTORICAL_OFFLINE_SECONDS:
-                                is_historical = True
-                            
-                            if diff_sec >= ALERT_THRESHOLD_SECONDS and alert_key not in alert_state:
-                                if name not in pending_offline: pending_offline[name] = []
-                                pending_offline[name].append({"name": dev_name, "model": dev_model, "duration": offline_str, "mac": alert_key})
-                        except Exception: 
-                            offline_str = ">30d"
-                            is_historical = True
-                    else:
-                        offline_str = ">30d"
-                        is_historical = True
-                            
-                    if not is_flapping:
-                        alertable_offline_devs += 1
-                        if is_historical:
-                            historical_devs += 1
+                                if is_gw:
+                                    if diff_sec >= HISTORICAL_OFFLINE_SECONDS:
+                                        if weight < 8: status, weight = "Grey", 8
+                                        issues.append({"label": "💤 GATEWAY HISTORICALLY DOWN", "time": "> 30d", "severity": "historical"})
+                                    else:
+                                        if weight < 20: status, weight = "Red", 20
+                                        issues.append({"label": "🚨 GATEWAY OFFLINE", "time": f"{offline_str} ago", "severity": "critical"})
+
+                                if diff_sec >= ALERT_THRESHOLD_SECONDS and alert_key not in alert_state:
+                                    if name not in pending_offline: pending_offline[name] = []
+                                    pending_offline[name].append({"name": dev_name, "model": dev_model, "duration": offline_str, "mac": alert_key})
                         else:
-                            recent_devs += 1
-                        
-                else:
-                    if alert_key in alert_state:
-                        if name not in pending_recovery: pending_recovery[name] = []
-                        pending_recovery[name].append({"name": dev_name, "model": dev_model, "mac": alert_key})
+                            historical_devs += 1
+
+                if dev_status == "online" and alert_key in alert_state:
+                    if name not in pending_recovery: pending_recovery[name] = []
+                    pending_recovery[name].append({"name": dev_name, "model": dev_model, "mac": alert_key})
                 
-                inventory.append({
-                    "name": dev_name,
-                    "model": dev_model,
-                    "status": dev_status.upper(),
-                    "has_update": has_update,
-                    "offline_duration": offline_str
-                })
+                inventory.append({"name": dev_name, "model": dev_model, "status": dev_status.upper(), "offline_duration": ""})
 
-                if is_gw and dev_status != "online" and not is_flapping:
-                    if is_historical:
-                        if weight < 8: status = "Grey"; weight = 8
-                        issues.append({"label": "💤 GATEWAY HISTORICALLY DOWN", "time": "> 30d", "severity": "historical"})
-                    else:
-                        if weight < 20: status = "Red"; weight = 20
-                        time_display = f"{offline_str} ago" if offline_str else "Critical"
-                        issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
-
-            if total_devs > 0 and alertable_offline_devs == total_devs:
-                issues = [i for i in issues if "GATEWAY" not in i['label']]
-                if alertable_offline_devs == historical_devs:
-                    if weight < 8: status = "Grey"; weight = 8
-                    issues.append({"label": "💤 SITE HISTORICALLY OFFLINE", "time": "> 30d", "severity": "historical"})
-                else:
-                    if weight < 20: status = "Red"; weight = 20
-                    issues.append({"label": "🚨 SITE COMPLETELY OFFLINE", "time": "Critical", "severity": "critical"})
-
-            if not primary_model and devices_list:
-                primary_model = devices_list[0].get('model', 'Gateway')
-            elif not primary_model:
-                primary_model = "Gateway"
-
-            # --- EXACT 5-MINUTE ISP BLOCK FILTER ---
-            # If the ISP issue is exactly 1 block (5 mins), it is ignored. Must be >= 2 blocks.
-            internet_issues = stats.get('internetIssues', [])
-            recent_isp_buckets = 0
-            isp_lookback_buckets = int((120 * 60) / 300) # 2 hours
+            # --- GHOST-FILTERED ISP LOGIC ---
+            # Checks both the 'periods' object and the standard 'internetIssues' list
+            isp_periods = reported.get('internetIssues5min', {}).get('periods', [])
+            if not isp_periods: isp_periods = site_data.get('statistics', {}).get('internetIssues', [])
             
-            for iss in internet_issues:
-                if (current_bucket - iss.get('index', 0)) <= isp_lookback_buckets:
-                    recent_isp_buckets += 1
+            valid_buckets = 0
+            for iss in isp_periods:
+                if iss.get('not_reported') or iss.get('notReported') or iss.get('high_latency'): continue
+                if (current_bucket - iss.get('index', 0)) <= 24: valid_buckets += 1
 
-            if recent_isp_buckets >= 2:
-                if weight < 15: status = "Yellow"; weight = 15
+            if valid_buckets >= 2:
+                if weight < 15: status, weight = "Yellow", 15
                 issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 2h ago", "severity": "warning"})
-                
-            if recent_devs > 0 and not any("SITE COMPLETELY OFFLINE" in i['label'] for i in issues):
-                if weight < 10: status = "Yellow"; weight = 10
-                issues.append({"label": f"⚠️ {recent_devs} Device(s) Offline", "time": "Partial", "severity": "warning"})
-                
-            if historical_devs > 0 and not any("SITE HISTORICALLY OFFLINE" in i['label'] for i in issues):
-                if weight < 5: status = "Green"; weight = 5
-                has_hw_gw = any("GATEWAY HISTORICALLY DOWN" in i['label'] for i in issues)
-                if not (has_hw_gw and historical_devs == 1):
-                    issues.append({"label": f"💤 {historical_devs} Device(s) Historically Down", "time": "> 30d", "severity": "historical"})
 
-            cards.append({
-                "SiteName": name,
-                "Model": primary_model,
-                "ISP": isp_name,
-                "Inventory": inventory,
-                "Status": status,
-                "IssuesCount": weight,
-                "IssuesList": issues
-            })
-    except Exception as e:
-        log(f"!! Error fetching Modern API: {str(e)}")
-    
+            if recent_devs > 0 and weight < 10:
+                status, weight = "Yellow", 10
+                issues.append({"label": f"⚠️ {recent_devs} Device(s) Offline", "time": "Partial", "severity": "warning"})
+
+            cards.append({"SiteName": name, "Model": primary_model or "Gateway", "ISP": site_data.get('statistics', {}).get('ispInfo', {}).get('name', ''), "Inventory": inventory, "Status": status, "IssuesCount": weight, "IssuesList": issues})
+    except Exception as e: log(f"!! Modern API Error: {str(e)}")
     return cards
 
 def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
-    if not CLASSIC_URL or not CLASSIC_USER or not CLASSIC_PASS: return []
+    if not CLASSIC_URL: return []
     cards = []
     current_time = datetime.now(timezone.utc)
-    
     try:
         session = requests.Session()
-        login_res = session.post(f"{CLASSIC_URL}/api/login", json={"username": CLASSIC_USER, "password": CLASSIC_PASS, "remember": True}, verify=False, timeout=15)
-        login_res.raise_for_status()
-
+        session.post(f"{CLASSIC_URL}/api/login", json={"username": CLASSIC_USER, "password": CLASSIC_PASS}, verify=False, timeout=15)
         sites_res = session.get(f"{CLASSIC_URL}/api/self/sites", verify=False, timeout=15).json().get('data', [])
-
         for site in sites_res:
-            site_name = site.get('name')
             site_desc = site.get('desc', 'Unnamed Site')
-            display_name = f"{site_desc} (Cloud)"
-            
-            if site_desc.lower() in IGNORE_SITES or display_name.lower() in IGNORE_SITES: continue
-            
-            dev_res = session.get(f"{CLASSIC_URL}/api/s/{site_name}/stat/device", verify=False, timeout=15).json().get('data', [])
+            if site_desc.lower() in IGNORE_SITES: continue
+            dev_res = session.get(f"{CLASSIC_URL}/api/s/{site.get('name')}/stat/device", verify=False, timeout=15).json().get('data', [])
             if not dev_res: continue
-
-            status = "Green"
-            weight = 0
-            issues = []
             inventory = []
-            primary_model = None
-            
-            total_devs = len(dev_res)
-            offline_devs = 0
-            alertable_offline_devs = 0
-            historical_devs = 0
-            recent_devs = 0
-
             for dev in dev_res:
-                dev_mac = dev.get("mac")
-                d_name = dev.get("name") or dev_mac or "Unknown Device"
-                d_model = dev.get("model", "UniFi Device")
-                alert_key = dev_mac or f"{site_desc}_{d_name}"
-                
-                dev_state = dev.get("state", 0)
-                is_offline = (dev_state == 0)
-                is_transitional = (dev_state not in [0, 1])
-                
-                offline_str = ""
-                is_historical = False
-                is_flapping = False
-
-                is_gw = (dev.get('type') == 'ugw')
-
-                if is_gw:
-                    primary_model = d_model
-
-                if is_transitional:
-                    inventory.append({
-                        "name": d_name,
-                        "model": d_model,
-                        "status": "UPDATING",
-                        "has_update": False,
-                        "offline_duration": ""
-                    })
-                    continue
-
-                if is_offline:
-                    offline_devs += 1
-                    last_seen = dev.get('last_seen') or dev.get('last_disconnect')
-                    
-                    if last_seen:
-                        try:
-                            diff_sec = (current_time - datetime.fromtimestamp(float(last_seen), timezone.utc)).total_seconds()
-                            offline_str = format_duration(diff_sec)
-                            
-                            # Apply the split Grace Periods
-                            grace_time = GW_GRACE_PERIOD_SECONDS if is_gw else DEVICE_GRACE_PERIOD_SECONDS
-                            if diff_sec < grace_time:
-                                is_flapping = True
-                                
-                            if diff_sec >= HISTORICAL_OFFLINE_SECONDS:
-                                is_historical = True
-                                
-                            if diff_sec >= ALERT_THRESHOLD_SECONDS and alert_key not in alert_state:
-                                if site_desc not in pending_offline: pending_offline[site_desc] = []
-                                pending_offline[site_desc].append({"name": d_name, "model": d_model, "duration": offline_str, "mac": alert_key})
-                        except Exception:
-                            offline_str = ">30d"
-                            is_historical = True
-                    else:
-                        offline_str = ">30d"
-                        is_historical = True
-
-                    if not is_flapping:
-                        alertable_offline_devs += 1
-                        if is_historical:
-                            historical_devs += 1
-                        else:
-                            recent_devs += 1
-
-                    if is_gw and not is_flapping:
-                        if is_historical:
-                            if weight < 8: status = "Grey"; weight = 8
-                            issues.append({"label": "💤 GATEWAY HISTORICALLY DOWN", "time": "> 30d", "severity": "historical"})
-                        else:
-                            if weight < 20: status = "Red"; weight = 20
-                            time_display = f"{offline_str} ago" if offline_str else "Offline"
-                            issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
-                else:
-                    if alert_key in alert_state:
-                        if site_desc not in pending_recovery: pending_recovery[site_desc] = []
-                        pending_recovery[site_desc].append({"name": d_name, "model": d_model, "mac": alert_key})
-
-                inventory.append({
-                    "name": d_name,
-                    "model": d_model,
-                    "status": "OFFLINE" if is_offline else "ONLINE",
-                    "has_update": dev.get("upgradable", False),
-                    "offline_duration": offline_str
-                })
-
-            if total_devs > 0 and alertable_offline_devs == total_devs:
-                issues = [i for i in issues if "GATEWAY" not in i['label']]
-                if alertable_offline_devs == historical_devs:
-                    if weight < 8: status = "Grey"; weight = 8
-                    issues.append({"label": "💤 SITE HISTORICALLY OFFLINE", "time": "> 30d", "severity": "historical"})
-                else:
-                    if weight < 20: status = "Red"; weight = 20
-                    issues.append({"label": "🚨 SITE COMPLETELY OFFLINE", "time": "Critical", "severity": "critical"})
-
-            if not primary_model:
-                primary_model = "Cloud Hosted"
-
-            if recent_devs > 0 and not any("SITE COMPLETELY OFFLINE" in i['label'] for i in issues):
-                if weight < 10: status = "Yellow"; weight = 10
-                issues.append({"label": f"⚠️ {recent_devs} Device(s) Offline", "time": "Partial", "severity": "warning"})
-                
-            if historical_devs > 0 and not any("SITE HISTORICALLY OFFLINE" in i['label'] for i in issues):
-                if weight < 5: status = "Green"; weight = 5
-                has_hw_gw = any("GATEWAY HISTORICALLY DOWN" in i['label'] for i in issues)
-                if not (has_hw_gw and historical_devs == 1):
-                    issues.append({"label": f"💤 {historical_devs} Device(s) Historically Down", "time": "> 30d", "severity": "historical"})
-
-            cards.append({
-                "SiteName": f"{site_desc} (Cloud)",
-                "Model": primary_model,
-                "ISP": "",
-                "Inventory": inventory,
-                "Status": status,
-                "IssuesCount": weight,
-                "IssuesList": issues
-            })
-
+                is_off = (dev.get("state", 0) == 0)
+                inventory.append({"name": dev.get("name") or dev.get("mac"), "model": dev.get("model"), "status": "OFFLINE" if is_off else "ONLINE", "offline_duration": ""})
+            cards.append({"SiteName": f"{site_desc} (Cloud)", "Model": "Classic", "ISP": "", "Inventory": inventory, "Status": "Green", "IssuesCount": 0, "IssuesList": []})
         session.post(f"{CLASSIC_URL}/api/logout", verify=False)
-    except Exception as e:
-        log(f"!! Error fetching Classic API: {str(e)}")
-
+    except Exception as e: log(f"!! Classic Error: {str(e)}")
     return cards
 
 def harvest_data():
@@ -463,71 +240,43 @@ def harvest_data():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f: alert_state = json.load(f)
-        except Exception: pass
-
+        except: pass
     while True:
         log(">>> Starting Unified Multi-Controller Harvest...")
+        pending_off, pending_rec = {}, {}
+        modern = fetch_modern_unifi(alert_state, pending_off, pending_rec)
+        classic = fetch_classic_unifi(alert_state, pending_off, pending_rec)
         
-        pending_offline = {}
-        pending_recovery = {}
-
-        modern_cards = fetch_modern_unifi(alert_state, pending_offline, pending_recovery)
-        classic_cards = fetch_classic_unifi(alert_state, pending_offline, pending_recovery)
+        for s, devs in pending_off.items():
+            if send_consolidated_offline_alert(s, devs):
+                for d in devs: alert_state[d['mac']] = datetime.now(timezone.utc).isoformat()
+        for s, devs in pending_rec.items():
+            if send_consolidated_recovery_alert(s, devs):
+                for d in devs:
+                    if d['mac'] in alert_state: del alert_state[d['mac']]
         
-        total_offline_queued = sum(len(v) for v in pending_offline.values())
-        if total_offline_queued > 0:
-            log(f"--> Queueing OFFLINE alerts for {total_offline_queued} devices across {len(pending_offline)} sites.")
-            
-        for site, devices in pending_offline.items():
-            if send_consolidated_offline_alert(site, devices):
-                for d in devices:
-                    alert_state[d['mac']] = datetime.now(timezone.utc).isoformat()
-
-        for site, devices in pending_recovery.items():
-            if send_consolidated_recovery_alert(site, devices):
-                for d in devices:
-                    if d['mac'] in alert_state:
-                        del alert_state[d['mac']]
-
-        all_cards = modern_cards + classic_cards
+        all_cards = modern + classic
         all_cards.sort(key=lambda x: (-x['IssuesCount'], x['SiteName']))
-        
         with open(TEMP_DATA_FILE, "w", encoding="utf-8") as f:
             json.dump({"timestamp": datetime.now().strftime("%H:%M:%S"), "sites": all_cards}, f, indent=4)
-        
         os.replace(TEMP_DATA_FILE, DATA_FILE)
-            
-        with open(TEMP_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(alert_state, f)
-            
+        with open(TEMP_STATE_FILE, "w", encoding="utf-8") as f: json.dump(alert_state, f)
         os.replace(TEMP_STATE_FILE, STATE_FILE)
-            
-        log(f"*** HARVEST SUCCESS: Processed {len(modern_cards)} Modern + {len(classic_cards)} Classic sites ***")
+        log(f"*** HARVEST SUCCESS: {len(all_cards)} Sites ***")
         time.sleep(POLL_INTERVAL)
 
 class MyHandler(SimpleHTTPRequestHandler):
     def log_message(self, format, *args): pass 
-    
     def handle_error(self, request, client_address):
-        exc = sys.exc_info()[1]
-        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
-            return 
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)): return 
         super().handle_error(request, client_address)
-
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
         self.send_header('Access-Control-Allow-Origin', '*')
         SimpleHTTPRequestHandler.end_headers(self)
 
 if __name__ == "__main__":
-    if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR, exist_ok=True)
-        
     if not os.path.exists(DATA_FILE):
-        with open(TEMP_DATA_FILE, "w") as f: 
-            json.dump({"timestamp": "N/A", "sites": []}, f)
-        os.replace(TEMP_DATA_FILE, DATA_FILE)
-        
+        with open(DATA_FILE, "w") as f: json.dump({"timestamp": "N/A", "sites": []}, f)
     threading.Thread(target=harvest_data, daemon=True).start()
-    
     HTTPServer(('0.0.0.0', 8080), MyHandler).serve_forever()
