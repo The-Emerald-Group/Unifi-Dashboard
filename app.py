@@ -234,6 +234,7 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             issues = []
             inventory = []
             primary_model = None 
+            gw_uptime = None   # Tracks uptime to detect reboots vs ISP issues
             offline_devs = 0
             historical_devs = 0
             recent_devs = 0
@@ -251,6 +252,12 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
 
                 if d.get('isConsole'):
                     primary_model = dev_model
+                    # Capture the uptime to verify graceful reboots
+                    if d.get('uptime') is not None:
+                        try:
+                            gw_uptime = int(d.get('uptime'))
+                        except:
+                            pass
 
                 if dev_status != "online":
                     offline_devs += 1
@@ -310,7 +317,6 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                         issues.append({"label": "🚨 GATEWAY OFFLINE", "time": time_display, "severity": "critical"})
 
             if total_devs > 0 and offline_devs == total_devs:
-                # If site is entirely down, don't double up with "Gateway Offline" message
                 issues = [i for i in issues if "GATEWAY" not in i['label']]
                 if offline_devs == historical_devs:
                     if weight < 8: status = "Grey"; weight = 8
@@ -324,20 +330,23 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             elif not primary_model:
                 primary_model = "Gateway"
 
-            # --- UPDATED ISP ISSUE LOGIC ---
-            # Lookback is now 2 hours (24 buckets) instead of 4 hours
-            # Requires at least 2 buckets (10 mins) of outage to trigger, ignoring 5-min firmware reboots
+            # --- SMART ISP LOGIC ---
             internet_issues = stats.get('internetIssues', [])
             recent_isp_buckets = 0
-            isp_lookback_buckets = int(120 / 5) 
+            isp_lookback_buckets = int(120 / 5) # 2 hours
             
             for iss in internet_issues:
                 if (current_bucket - iss.get('index', 0)) <= isp_lookback_buckets:
                     recent_isp_buckets += 1
 
             if recent_isp_buckets >= 2:
-                if weight < 15: status = "Yellow"; weight = 15
-                issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 2h ago", "severity": "warning"})
+                # Intercept the ISP alert if the gateway rebooted during this window
+                if gw_uptime is not None and gw_uptime < (isp_lookback_buckets * 5 * 60):
+                    if weight < 5: status = "Green"; weight = 5
+                    issues.append({"label": "🔄 RECENT GATEWAY REBOOT", "time": "< 2h ago", "severity": "historical"})
+                else:
+                    if weight < 15: status = "Yellow"; weight = 15
+                    issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 2h ago", "severity": "warning"})
                 
             if recent_devs > 0 and not any("SITE COMPLETELY OFFLINE" in i['label'] for i in issues):
                 if weight < 10: status = "Yellow"; weight = 10
