@@ -183,6 +183,41 @@ def parse_iso_time(ts_str):
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     except: return None
 
+def parse_unifi_time(ts_val):
+    """
+    Parse UniFi timestamps that may be ISO strings or unix seconds/milliseconds.
+    Returns a timezone-aware UTC datetime or None.
+    """
+    if ts_val in (None, ""):
+        return None
+
+    # API payloads occasionally send numeric timestamps for state transitions.
+    if isinstance(ts_val, (int, float)):
+        try:
+            ts = float(ts_val)
+            if ts > 1e12:  # milliseconds
+                ts = ts / 1000.0
+            return datetime.fromtimestamp(ts, timezone.utc)
+        except:
+            return None
+
+    if isinstance(ts_val, str):
+        s = ts_val.strip()
+        if not s:
+            return None
+        # Numeric string support (seconds/milliseconds).
+        if s.replace(".", "", 1).isdigit():
+            try:
+                ts = float(s)
+                if ts > 1e12:
+                    ts = ts / 1000.0
+                return datetime.fromtimestamp(ts, timezone.utc)
+            except:
+                return None
+        return parse_iso_time(s)
+
+    return None
+
 def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
     if not API_KEY: return []
     cards = []
@@ -239,8 +274,12 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
                         dev_status = "online"
                     else:
                         offline_count += 1
-                        dt_str = d.get('lastSeenAt') or d.get('lastConnectionStateChange')
-                        last_seen_dt = parse_iso_time(dt_str)
+                        # Prefer connection state change over last seen so fresh outages
+                        # are not misclassified when lastSeenAt is stale or missing.
+                        last_seen_dt = (
+                            parse_unifi_time(d.get('lastConnectionStateChange'))
+                            or parse_unifi_time(d.get('lastSeenAt'))
+                        )
                         if last_seen_dt:
                             diff_sec = (current_time - last_seen_dt).total_seconds()
                             offline_str = format_duration(diff_sec)
