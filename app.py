@@ -35,7 +35,10 @@ SMTP_USER = os.environ.get("SMTP_USER")
 SMTP_PASS = os.environ.get("SMTP_PASS")
 EMAIL_FROM = os.environ.get("EMAIL_FROM")
 EMAIL_TO = os.environ.get("EMAIL_TO")
-ALERT_THRESHOLD_SECONDS = 8 * 3600  # 8 Hours
+try:
+    ALERT_THRESHOLD_SECONDS = int(os.environ.get("ALERT_THRESHOLD_SECONDS", str(8 * 3600)))
+except ValueError:
+    ALERT_THRESHOLD_SECONDS = 8 * 3600
 
 # --- DATA STORAGE PATHS ---
 DATA_FILE = "data.json"
@@ -246,8 +249,11 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             host_data = host_map.get(host_id, {})
             
             reported = host_data.get('reportedState', {})
-            app_reboot_ts = reported.get('deviceStateLastChanged', 0)
-            app_recently_restarted = (current_time.timestamp() - app_reboot_ts) < 600 
+            app_reboot_dt = parse_unifi_time(reported.get('deviceStateLastChanged'))
+            app_recently_restarted = False
+            if app_reboot_dt:
+                reboot_age_sec = (current_time - app_reboot_dt).total_seconds()
+                app_recently_restarted = 0 <= reboot_age_sec < 600
 
             status, weight, issues, inventory = "Green", 0, [], []
             primary_model = None
@@ -358,6 +364,10 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
             if not dev_res: continue
             status, weight, issues, inventory, recent_devs, hist_devs, off_count = "Green", 0, [], [], 0, 0, 0
             for dev in dev_res:
+                dev_mac = dev.get("mac")
+                dev_name = dev.get("name") or dev_mac or "Unknown Device"
+                dev_model = dev.get("model") or "UniFi Device"
+                alert_key = dev_mac or f"{site_desc} (cloud)_{dev_name}"
                 is_off = (dev.get("state", 0) == 0); offline_str = ""
                 if is_off:
                     off_count += 1; last_seen = dev.get('last_seen') or dev.get('last_disconnect')
@@ -367,8 +377,29 @@ def fetch_classic_unifi(alert_state, pending_offline, pending_recovery):
                         if diff_sec > DEVICE_GRACE_PERIOD_SECONDS:
                             if diff_sec >= HISTORICAL_OFFLINE_SECONDS: hist_devs += 1
                             else: recent_devs += 1
+                            if diff_sec >= ALERT_THRESHOLD_SECONDS and alert_key not in alert_state:
+                                cloud_site = f"{site_desc} (Cloud)"
+                                if cloud_site not in pending_offline:
+                                    pending_offline[cloud_site] = []
+                                pending_offline[cloud_site].append({
+                                    "name": dev_name,
+                                    "model": dev_model,
+                                    "duration": offline_str,
+                                    "mac": alert_key
+                                })
                     else: hist_devs += 1; offline_str = ">30d"
-                inventory.append({"name": dev.get("name") or dev.get("mac"), "model": dev.get("model"), "status": "OFFLINE" if is_off else "ONLINE", "offline_duration": offline_str})
+                else:
+                    if alert_key in alert_state:
+                        cloud_site = f"{site_desc} (Cloud)"
+                        if cloud_site not in pending_recovery:
+                            pending_recovery[cloud_site] = []
+                        pending_recovery[cloud_site].append({
+                            "name": dev_name,
+                            "model": dev_model,
+                            "mac": alert_key
+                        })
+
+                inventory.append({"name": dev_name, "model": dev_model, "status": "OFFLINE" if is_off else "ONLINE", "offline_duration": offline_str})
             
             if recent_devs > 0: status, weight = "Yellow", 10; issues.append({"label": f"⚠️ {recent_devs} Device(s) Offline", "time": "Partial", "severity": "warning"})
             elif hist_devs > 0: weight = 5; issues.append({"label": f"💤 {hist_devs} Device(s) Historically Down", "time": "> 30d", "severity": "historical"})
