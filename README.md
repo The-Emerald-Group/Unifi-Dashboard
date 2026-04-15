@@ -57,6 +57,7 @@ The wallboard auto-refreshes every **30 seconds**. The backend harvests fresh da
 |---|---|---|
 | `UNIFI_API_KEY` | *(required)* | Your read-only UniFi Site Manager API Key |
 | `PYTHONUNBUFFERED` | `1` | Ensures Python logs appear in real-time in Docker |
+| `DISPLAY_TIMEZONE` | `TZ` or system local | Timezone used for "Last Harvest" display (DST-aware, e.g. `Europe/London`) |
 
 The polling interval defaults to **5 minutes** and can be changed in `app.py` by modifying the `POLL_INTERVAL` variable before building the image.
 

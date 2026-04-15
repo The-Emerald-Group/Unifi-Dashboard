@@ -11,6 +11,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, HTTPServer
+from zoneinfo import ZoneInfo
 
 # Suppress insecure HTTPS warnings for the classic controller
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -22,6 +23,7 @@ MODERN_URL = "https://api.ui.com/v1"
 CLASSIC_URL = os.environ.get("CLASSIC_URL")
 CLASSIC_USER = os.environ.get("CLASSIC_USER")
 CLASSIC_PASS = os.environ.get("CLASSIC_PASS")
+DISPLAY_TIMEZONE = os.environ.get("DISPLAY_TIMEZONE") or os.environ.get("TZ")
 
 # --- EXCLUSIONS ---
 IGNORE_SITES_RAW = os.environ.get("IGNORE_SITES", "")
@@ -221,6 +223,71 @@ def parse_unifi_time(ts_val):
 
     return None
 
+def get_display_time():
+    """
+    Return current time in configured display timezone.
+    Uses DISPLAY_TIMEZONE (or TZ) if set, otherwise system local time.
+    """
+    now_utc = datetime.now(timezone.utc)
+    if DISPLAY_TIMEZONE:
+        try:
+            return now_utc.astimezone(ZoneInfo(DISPLAY_TIMEZONE))
+        except Exception:
+            pass
+    return now_utc.astimezone()
+
+def _truthy_issue_flag(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value > 0
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if not v:
+            return False
+        return v in ("1", "true", "yes", "y", "on", "detected", "active")
+    return False
+
+def classify_internet_issue_bucket(issue_bucket):
+    """
+    Best-effort classification for UniFi internet issue periods.
+    Returns one of: packet_loss, latency, isp.
+    """
+    if not isinstance(issue_bucket, dict):
+        return "isp"
+
+    key_set = {str(k).lower() for k in issue_bucket.keys()}
+    text_fields = []
+    for v in issue_bucket.values():
+        if isinstance(v, str):
+            text_fields.append(v.lower())
+
+    combined_text = " ".join(text_fields)
+
+    packet_keys = (
+        "packet_loss", "packetloss", "packet-loss",
+        "high_packet_loss", "highpacketloss", "packet_loss_detected"
+    )
+    if any(k in key_set for k in packet_keys):
+        for k in packet_keys:
+            if k in issue_bucket and _truthy_issue_flag(issue_bucket.get(k)):
+                return "packet_loss"
+        # If field exists but is not obviously boolean, treat presence as signal.
+        return "packet_loss"
+    if "packet loss" in combined_text or "packetloss" in combined_text:
+        return "packet_loss"
+
+    latency_keys = ("high_latency", "highlatency", "latency", "latency_detected", "high_latency_detected")
+    if any(k in key_set for k in latency_keys):
+        for k in latency_keys:
+            if k in issue_bucket and _truthy_issue_flag(issue_bucket.get(k)):
+                return "latency"
+        return "latency"
+    if "latency" in combined_text or "high latency" in combined_text:
+        return "latency"
+
+    return "isp"
+
 def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
     if not API_KEY: return []
     cards = []
@@ -317,12 +384,23 @@ def fetch_modern_unifi(alert_state, pending_offline, pending_recovery):
             isp_periods = reported.get('internetIssues5min', {}).get('periods', [])
             if not isp_periods: isp_periods = stats.get('internetIssues', [])
             valid_buckets = 0
+            issue_type_counts = {"packet_loss": 0, "latency": 0, "isp": 0}
             for iss in isp_periods:
-                if iss.get('not_reported') or iss.get('notReported') or iss.get('high_latency'): continue
-                if (current_bucket - iss.get('index', 0)) <= (ALERT_WINDOW_MINS / 5): valid_buckets += 1
+                if iss.get('not_reported') or iss.get('notReported'):
+                    continue
+                if (current_bucket - iss.get('index', 0)) <= (ALERT_WINDOW_MINS / 5):
+                    valid_buckets += 1
+                    issue_type = classify_internet_issue_bucket(iss)
+                    issue_type_counts[issue_type] = issue_type_counts.get(issue_type, 0) + 1
             if valid_buckets >= 2:
                 status, weight = "Yellow", max(weight, 15)
-                issues.append({"label": "📡 RECENT ISP ISSUE", "time": "< 2h ago", "severity": "warning"})
+                dominant_issue = max(issue_type_counts, key=issue_type_counts.get)
+                issue_label = "📡 RECENT ISP ISSUE"
+                if dominant_issue == "packet_loss":
+                    issue_label = "📶 RECENT PACKET LOSS DETECTED"
+                elif dominant_issue == "latency":
+                    issue_label = "🐢 RECENT HIGH LATENCY DETECTED"
+                issues.append({"label": issue_label, "time": "< 2h ago", "severity": "warning"})
 
             if total_devs > 0 and offline_count == total_devs:
                 issues = [i for i in issues if "GATEWAY" not in i['label']]
@@ -429,7 +507,7 @@ def harvest_data():
                     if d['mac'] in alert_state: del alert_state[d['mac']]
         all_cards = modern + classic
         all_cards.sort(key=lambda x: (-x['IssuesCount'], x['SiteName']))
-        with open(TEMP_DATA_FILE, "w", encoding="utf-8") as f: json.dump({"timestamp": datetime.now().strftime("%H:%M:%S"), "sites": all_cards}, f, indent=4)
+        with open(TEMP_DATA_FILE, "w", encoding="utf-8") as f: json.dump({"timestamp": get_display_time().strftime("%H:%M:%S"), "sites": all_cards}, f, indent=4)
         os.replace(TEMP_DATA_FILE, DATA_FILE)
         with open(TEMP_STATE_FILE, "w", encoding="utf-8") as f: json.dump(alert_state, f)
         os.replace(TEMP_STATE_FILE, STATE_FILE)
