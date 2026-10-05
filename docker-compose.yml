@@ -22,6 +22,7 @@ services:
       - SMTP_PASS=your_smtp_password
       - EMAIL_FROM=alerts@yourdomain.com
       - EMAIL_TO=reports@yourdomain.com
+      - ALERT_THRESHOLD_SECONDS=7200
       
       # --- Exclusions (Comma-separated list of exact site names) ---
       - IGNORE_SITES=Test Site 1, Lab Network, Decommissioned Office

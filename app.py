@@ -38,9 +38,9 @@ SMTP_PASS = os.environ.get("SMTP_PASS")
 EMAIL_FROM = os.environ.get("EMAIL_FROM")
 EMAIL_TO = os.environ.get("EMAIL_TO")
 try:
-    ALERT_THRESHOLD_SECONDS = int(os.environ.get("ALERT_THRESHOLD_SECONDS", str(8 * 3600)))
+    ALERT_THRESHOLD_SECONDS = int(os.environ.get("ALERT_THRESHOLD_SECONDS", str(2 * 3600)))
 except ValueError:
-    ALERT_THRESHOLD_SECONDS = 8 * 3600
+    ALERT_THRESHOLD_SECONDS = 2 * 3600
 
 # --- DATA STORAGE PATHS ---
 DATA_FILE = "data.json"
@@ -66,6 +66,8 @@ def send_consolidated_offline_alert(site_name, devices):
     count = len(devices)
     s_plural = "s" if count > 1 else ""
     is_are = "are" if count > 1 else "is"
+    threshold_hours = ALERT_THRESHOLD_SECONDS / 3600
+    threshold_text = f"{threshold_hours:g} hour{'' if threshold_hours == 1 else 's'}"
     
     subject = f"🚨 URGENT: {count} UniFi Device{s_plural} Offline - {site_name}"
     
@@ -88,7 +90,7 @@ def send_consolidated_offline_alert(site_name, devices):
           </div>
           <div style="padding: 30px;">
             <p style="font-size: 16px; color: #444; line-height: 1.5; margin-top: 0;">
-              An automated alert has been triggered by the Emerald IT UniFi Monitor. <b>{count} network device{s_plural}</b> at <strong>{site_name}</strong> {is_are} unreachable for over 8 hours.
+              An automated alert has been triggered by the Emerald IT UniFi Monitor. <b>{count} network device{s_plural}</b> at <strong>{site_name}</strong> {is_are} unreachable for over {threshold_text}.
             </p>
             <table style="width: 100%; border-collapse: collapse; margin-top: 20px; margin-bottom: 25px; background-color: #f9f9f9; border-radius: 6px; overflow: hidden; text-align: left;">
               <tr style="background-color: #eaeaea;">
